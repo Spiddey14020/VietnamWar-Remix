@@ -154,7 +154,7 @@ export function RpgDossierModal({
 
   return (
     <div
-      className="fixed inset-0 z-30 flex items-center justify-center bg-[#0b0e0a]/88 p-3 sm:p-4 pointer-events-auto overflow-y-auto"
+      className="fixed inset-0 z-30 flex items-start sm:items-center justify-center bg-[#0b0e0a]/88 p-3 sm:p-4 pointer-events-auto overflow-y-auto touch-scroll"
       onClick={onClose}
     >
       <div

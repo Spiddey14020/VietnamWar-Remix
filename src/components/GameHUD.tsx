@@ -11,6 +11,8 @@ import {
 interface GameHUDProps {
   hud: HudSnapshot;
   showTouchControls: boolean;
+  isFullscreen: boolean;
+  onToggleFullscreen: () => void;
   onToggleMap: () => void;
   onToggleArmory: () => void;
   onToggleRpg: () => void;
@@ -20,6 +22,7 @@ interface GameHUDProps {
   onToggleMute: () => void;
   onPause: () => void;
   onSelectWeapon: (id: WeaponId) => void;
+  onCycleWeapon: () => void;
   onContextAction: () => void;
   onCallCounterBattery: () => void;
 }
@@ -44,6 +47,8 @@ function shortestAngleDiff(a: number, b: number): number {
 export function GameHUD({
   hud,
   showTouchControls,
+  isFullscreen,
+  onToggleFullscreen,
   onToggleMap,
   onToggleArmory,
   onToggleRpg,
@@ -53,6 +58,7 @@ export function GameHUD({
   onToggleMute,
   onPause,
   onSelectWeapon,
+  onCycleWeapon,
   onContextAction,
   onCallCounterBattery,
 }: GameHUDProps) {
@@ -170,90 +176,106 @@ export function GameHUD({
       )}
 
       {/* Top Perimeter: Objectives + Officer/Map/CB (Left) · Compass + Time/Weather (Center) · Audio/Pause (Right) */}
-      <div className="flex items-start justify-between px-3 sm:px-5 pt-3 gap-3">
+      <div
+        className="flex items-start justify-between gap-2 sm:gap-3"
+        style={{
+          paddingTop: 'max(0.5rem, env(safe-area-inset-top))',
+          paddingLeft: 'max(0.65rem, env(safe-area-inset-left))',
+          paddingRight: 'max(0.65rem, env(safe-area-inset-right))',
+        }}
+      >
         {/* Top-Left: Objective Cluster + Map/Armory/Officer Controls */}
-        <div className="flex flex-col gap-1.5 max-w-[270px] sm:max-w-[330px]">
-          <div className="bg-[#121610]/85 border border-[#3a4433] px-3 py-2 rounded">
+        <div className="flex flex-col gap-1.5 max-w-[58vw] sm:max-w-[330px]">
+          <div className="bg-[#121610]/85 border border-[#3a4433] px-2.5 sm:px-3 py-1.5 sm:py-2 rounded">
             <div className="flex items-center justify-between gap-2 text-[10px] font-mono-tabular uppercase tracking-wider text-[#9cc47d] mb-0.5">
               <span className="truncate">
                 {activeFaction.shortName} · {activeStage ? `${activeStage.opCode} ${activeStage.title}` : 'Valley Skirmish'}
               </span>
             </div>
-            <div className="flex items-center justify-between gap-3 mb-1">
-              <span className="text-[11px] font-mono-tabular uppercase tracking-wider text-[#c89b3c]">
-                Mission Objectives
+            <div className="flex items-center justify-between gap-2 mb-0.5 sm:mb-1">
+              <span className="text-[10px] sm:text-[11px] font-mono-tabular uppercase tracking-wider text-[#c89b3c] truncate">
+                Objectives
               </span>
-              <span className="text-[11px] font-mono-tabular text-[#a9ad99] tabular-nums">
+              <span className="text-[10px] sm:text-[11px] font-mono-tabular text-[#a9ad99] tabular-nums shrink-0">
                 {hud.kills} KIA
               </span>
             </div>
-            <div className="space-y-1 text-xs">
-              {hud.objectives.map((obj) => (
-                <div
-                  key={obj.id}
-                  className={`flex items-center justify-between gap-2 ${
-                    obj.completed
-                      ? 'text-[#7f8973] line-through'
-                      : obj.active
-                        ? 'text-[#ece9df]'
-                        : 'text-[#6c7362]'
-                  }`}
-                >
-                  <span className="truncate">{obj.code} · {obj.label}</span>
-                </div>
-              ))}
+            <div className="space-y-0.5 sm:space-y-1 text-[11px] sm:text-xs">
+              {hud.objectives
+                .filter((obj) => !showTouchControls || !obj.completed)
+                .slice(0, showTouchControls ? 2 : 4)
+                .map((obj) => (
+                  <div
+                    key={obj.id}
+                    className={`flex items-center justify-between gap-2 ${
+                      obj.completed
+                        ? 'text-[#7f8973] line-through'
+                        : obj.active
+                          ? 'text-[#ece9df]'
+                          : 'text-[#6c7362]'
+                    }`}
+                  >
+                    <span className="truncate">{obj.code} · {obj.label}</span>
+                  </div>
+                ))}
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5 pointer-events-auto">
+          <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 pointer-events-auto">
             <button
               type="button"
               onClick={onToggleMap}
-              className="min-h-[40px] px-2.5 py-1.5 bg-[#121610]/88 hover:bg-[#1e251b] border border-[#3a4433] rounded text-[11px] font-mono-tabular text-[#d9d5c5] cursor-pointer whitespace-nowrap"
+              className="min-h-[38px] sm:min-h-[40px] px-2 sm:px-2.5 py-1 bg-[#121610]/88 hover:bg-[#1e251b] border border-[#3a4433] rounded text-[11px] font-mono-tabular text-[#d9d5c5] cursor-pointer whitespace-nowrap"
             >
-              Map (M)
+              {showTouchControls ? 'Map' : 'Map (M)'}
             </button>
             <button
               type="button"
               onClick={onToggleArmory}
-              className="min-h-[40px] px-2.5 py-1.5 bg-[#121610]/88 hover:bg-[#1e251b] border border-[#3a4433] rounded text-[11px] font-mono-tabular text-[#d9d5c5] cursor-pointer whitespace-nowrap"
+              className="min-h-[38px] sm:min-h-[40px] px-2 sm:px-2.5 py-1 bg-[#121610]/88 hover:bg-[#1e251b] border border-[#3a4433] rounded text-[11px] font-mono-tabular text-[#d9d5c5] cursor-pointer whitespace-nowrap"
             >
-              Armory (T)
+              {showTouchControls ? 'Armory' : 'Armory (T)'}
             </button>
             <button
               type="button"
               onClick={onToggleRpg}
-              className={`min-h-[40px] px-2.5 py-1.5 border rounded text-[11px] font-mono-tabular cursor-pointer whitespace-nowrap transition-colors ${
+              className={`min-h-[38px] sm:min-h-[40px] px-2 sm:px-2.5 py-1 border rounded text-[11px] font-mono-tabular cursor-pointer whitespace-nowrap transition-colors ${
                 unspentRpg > 0
                   ? 'bg-[#c89b3c] border-[#f5d98a] text-[#11150f] font-bold'
                   : 'bg-[#121610]/88 hover:bg-[#1e251b] border-[#3a4433] text-[#d9d5c5]'
               }`}
             >
-              {unspentRpg > 0 ? `RPG +${unspentRpg} (K)` : 'RPG (K)'}
+              {unspentRpg > 0
+                ? showTouchControls
+                  ? `RPG +${unspentRpg}`
+                  : `RPG +${unspentRpg} (K)`
+                : showTouchControls
+                  ? 'RPG'
+                  : 'RPG (K)'}
             </button>
             <button
               type="button"
               onClick={onToggleOfficer}
-              className={`min-h-[40px] px-2.5 py-1.5 border rounded text-[11px] font-mono-tabular cursor-pointer whitespace-nowrap transition-colors ${
+              className={`min-h-[38px] sm:min-h-[40px] px-2 sm:px-2.5 py-1 border rounded text-[11px] font-mono-tabular cursor-pointer whitespace-nowrap transition-colors ${
                 officer.officerActive
                   ? 'bg-[#c89b3c] border-[#f5d98a] text-[#11150f] font-bold'
                   : 'bg-[#121610]/88 hover:bg-[#1e251b] border-[#3a4433] text-[#d9d5c5]'
               }`}
             >
-              Officer (O)
+              {showTouchControls ? 'Officer' : 'Officer (O)'}
             </button>
 
             {officer.officerActive && (
               <button
                 type="button"
                 onClick={onToggleBinoculars}
-                className={`min-h-[40px] px-2.5 py-1.5 border rounded text-[11px] font-mono-tabular cursor-pointer whitespace-nowrap ${
+                className={`min-h-[38px] sm:min-h-[40px] px-2 sm:px-2.5 py-1 border rounded text-[11px] font-mono-tabular cursor-pointer whitespace-nowrap ${
                   officer.binocularZoom
                     ? 'bg-[#2a3822] border-[#9cc47d] text-[#e7f2dc] font-bold'
                     : 'bg-[#121610]/88 hover:bg-[#1e251b] border-[#4e5c44] text-[#d9d5c5]'
                 }`}
               >
-                Binos (V)
+                {showTouchControls ? 'Binos' : 'Binos (V)'}
               </button>
             )}
 
@@ -385,26 +407,35 @@ export function GameHUD({
           </div>
         </div>
 
-        {/* Top-Right: Compact Mobile Clock + Mute & Pause */}
-        <div className="flex flex-col items-end gap-1.5 pointer-events-auto">
-          <div className="flex items-center gap-2">
+        {/* Top-Right: Compact Mobile Compass/Clock + Fullscreen + Mute & Pause */}
+        <div className="flex flex-col items-end gap-1.5 pointer-events-auto shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            {showTouchControls && (
+              <button
+                type="button"
+                onClick={onToggleFullscreen}
+                className="min-h-[40px] sm:min-h-[44px] px-2.5 py-1.5 bg-[#121610]/85 hover:bg-[#1e251b] border border-[#3a4433] rounded text-[11px] font-mono-tabular text-[#d9d5c5] cursor-pointer whitespace-nowrap"
+              >
+                {isFullscreen ? 'Exit Full' : 'Full'}
+              </button>
+            )}
             <button
               type="button"
               onClick={onToggleMute}
-              className="min-h-[44px] px-3 py-2 bg-[#121610]/85 hover:bg-[#1e251b] border border-[#3a4433] rounded text-xs font-mono-tabular text-[#ece9df] cursor-pointer whitespace-nowrap"
+              className="min-h-[40px] sm:min-h-[44px] px-2.5 sm:px-3 py-1.5 bg-[#121610]/85 hover:bg-[#1e251b] border border-[#3a4433] rounded text-[11px] sm:text-xs font-mono-tabular text-[#ece9df] cursor-pointer whitespace-nowrap"
             >
               {hud.muted ? 'Muted' : 'Audio'}
             </button>
             <button
               type="button"
               onClick={onPause}
-              className="min-h-[44px] px-3.5 py-2 bg-[#121610]/85 hover:bg-[#1e251b] border border-[#3a4433] rounded text-xs font-mono-tabular text-[#ece9df] cursor-pointer whitespace-nowrap"
+              className="min-h-[40px] sm:min-h-[44px] px-3 sm:px-3.5 py-1.5 bg-[#121610]/85 hover:bg-[#1e251b] border border-[#3a4433] rounded text-[11px] sm:text-xs font-mono-tabular text-[#ece9df] cursor-pointer whitespace-nowrap"
             >
               Pause
             </button>
           </div>
           <div className="sm:hidden text-[10px] font-mono-tabular tabular-nums bg-[#121610]/85 border border-[#323a2c] px-2 py-0.5 rounded text-[#d4d0bf]">
-            {env.clockStr} · {env.phaseLabel} · {env.weather}
+            {String(Math.round(hud.headingDeg)).padStart(3, '0')}° · {env.clockStr} · {env.weather}
           </div>
         </div>
       </div>
@@ -552,87 +583,142 @@ export function GameHUD({
       )}
 
       {/* Bottom Perimeter Status Clusters */}
-      <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between gap-3">
-        {/* Bottom-Left: Health, Stamina, Rank & XP */}
-        <div className="bg-[#121610]/88 border border-[#3a4433] rounded px-3.5 py-2.5 min-w-[188px]">
-          <div className="flex items-baseline justify-between gap-4">
-            <span className="text-xs text-[#a5a897]">Health</span>
-            <span
-              className={`text-xl font-display font-bold tabular-nums ${
-                hud.health <= 30 ? 'text-[#e05a47]' : 'text-[#ece9df]'
-              }`}
-            >
-              {hud.health}
-            </span>
-          </div>
-          <div className="w-full h-1.5 bg-[#23291f] rounded overflow-hidden mt-1 mb-2">
-            <div
-              className={`h-full ${hud.health <= 30 ? 'bg-[#d94a38]' : 'bg-[#7d9c54]'}`}
-              style={{ width: `${hpPct}%` }}
-            />
+      {showTouchControls ? (
+        /* Slim Android Phone & Tablet Bottom Status Strip (sits below thumb stick & FIRE button with zero overlap) */
+        <div
+          className="fixed left-0 right-0 flex items-center justify-between gap-2 px-2.5 sm:px-4 pointer-events-none"
+          style={{ bottom: 'max(0.35rem, env(safe-area-inset-bottom))' }}
+        >
+          <div className="bg-[#121610]/90 border border-[#3a4433] rounded px-2.5 py-1.5 flex items-center gap-2.5 min-w-0 max-w-[54%]">
+            <div className="min-w-[54px]">
+              <div className="flex items-baseline justify-between gap-1.5 text-xs font-mono-tabular">
+                <span className="text-[10px] text-[#9ea38f]">HP</span>
+                <span
+                  className={`text-sm font-display font-bold tabular-nums ${
+                    hud.health <= 30 ? 'text-[#e05a47]' : 'text-[#ece9df]'
+                  }`}
+                >
+                  {hud.health}
+                </span>
+              </div>
+              <div className="w-full h-1 bg-[#23291f] rounded overflow-hidden mt-0.5">
+                <div
+                  className={`h-full ${hud.health <= 30 ? 'bg-[#d94a38]' : 'bg-[#7d9c54]'}`}
+                  style={{ width: `${hpPct}%` }}
+                />
+              </div>
+            </div>
+            <div className="text-[10px] font-mono-tabular text-[#b8b39e] truncate">
+              <div className="flex items-center gap-1.5">
+                <span>STM {hud.stamina}%</span>
+                {hud.bleeding && <span className="text-[#e86958] font-bold">BLEED</span>}
+              </div>
+              <div className="text-[9px] text-[#9cc47d] truncate">
+                LV{prog.level} · {terrainLabel}
+                {hud.terrainCamoActive ? ' · CAMO+' : ''}
+              </div>
+            </div>
           </div>
 
-          <div className="flex items-center justify-between text-[11px] font-mono-tabular text-[#b8b39e] gap-2.5 mb-2">
-            <span>STM {hud.stamina}%</span>
-            <span aria-hidden="true">·</span>
-            <span>{hud.isCrouching ? 'CROUCH' : hud.isSprinting ? 'SPRINT' : 'STAND'}</span>
-            {hud.bleeding && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="text-[#e86958] font-semibold">BLEEDING</span>
-              </>
-            )}
-          </div>
-
-          {/* Rank, Class & Career XP Bar */}
-          <div className="pt-1.5 border-t border-[#293124]">
-            <div className="flex items-center justify-between text-[10px] font-mono-tabular text-[#c89b3c] tabular-nums gap-2">
-              <span className="truncate">LV {prog.level} · {prog.rankTitle} · {activeClassSpec.name}</span>
-              <span className="text-[#9ea38f] shrink-0">
-                {prog.xpIntoLevel}/{prog.xpForNextLevel} XP
+          <button
+            type="button"
+            onClick={onCycleWeapon}
+            className="pointer-events-auto bg-[#121610]/90 active:bg-[#1e251b] border border-[#3a4433] rounded px-2.5 py-1.5 text-right cursor-pointer shrink-0"
+          >
+            <div className="flex items-baseline justify-end gap-1">
+              <span className="text-base font-display font-bold text-[#ece9df] tabular-nums leading-none">
+                {weaponState.mag}
+              </span>
+              <span className="text-[11px] font-mono-tabular text-[#8e9381] tabular-nums">
+                /{weaponState.reserve}
               </span>
             </div>
-            <div className="w-full h-1 bg-[#23291f] rounded overflow-hidden mt-1">
-              <div className="h-full bg-[#c89b3c]" style={{ width: `${xpPct}%` }} />
+            <div className="text-[10px] font-mono-tabular text-[#c89b3c] leading-tight">
+              {spec.name} · {weaponState.fireMode}
             </div>
-          </div>
-
-          {/* Terrain Zone & Uniform Camo Bonus Status */}
-          <div className="pt-1.5 mt-1.5 border-t border-[#293124] flex items-center justify-between gap-2 text-[10px] font-mono-tabular">
-            <span className="text-[#a9ad99] truncate">{terrainLabel}</span>
-            <span
-              className={`shrink-0 ${
-                hud.terrainCamoActive ? 'text-[#9cc47d] font-semibold' : 'text-[#8e9381]'
-              }`}
-            >
-              {uniformDisplayName} · {hud.terrainCamoActive ? 'CAMO ACTIVE' : 'STANDBY'}
-            </span>
-          </div>
+          </button>
         </div>
-
-        {/* Bottom-Right: Weapon Loadout, Attachments & Ammo */}
-        <div className="bg-[#121610]/88 border border-[#3a4433] rounded px-3.5 py-2.5 text-right pointer-events-auto">
-          <div className="flex items-baseline justify-end gap-2">
-            <span className="text-2xl font-display font-bold text-[#ece9df] tabular-nums">
-              {weaponState.mag}
-            </span>
-            <span className="text-sm font-mono-tabular text-[#8e9381] tabular-nums">
-              / {weaponState.reserve}
-            </span>
-          </div>
-          <div className="flex items-center justify-end gap-2 text-[11px] font-mono-tabular text-[#c89b3c] mt-0.5">
-            <span>{spec.name}</span>
-            <span aria-hidden="true">·</span>
-            <span>{weaponState.fireMode}</span>
-            <span aria-hidden="true">·</span>
-            <span className="text-[#b8b39e]">FRAG {hud.grenades}</span>
-          </div>
-          {attTags.length > 0 && (
-            <div className="text-[10px] font-mono-tabular text-[#9cc47d] mt-0.5">
-              {attTags.join(' · ')}
+      ) : (
+        <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between gap-3">
+          {/* Bottom-Left: Health, Stamina, Rank & XP */}
+          <div className="bg-[#121610]/88 border border-[#3a4433] rounded px-3.5 py-2.5 min-w-[188px]">
+            <div className="flex items-baseline justify-between gap-4">
+              <span className="text-xs text-[#a5a897]">Health</span>
+              <span
+                className={`text-xl font-display font-bold tabular-nums ${
+                  hud.health <= 30 ? 'text-[#e05a47]' : 'text-[#ece9df]'
+                }`}
+              >
+                {hud.health}
+              </span>
             </div>
-          )}
-          {!showTouchControls && (
+            <div className="w-full h-1.5 bg-[#23291f] rounded overflow-hidden mt-1 mb-2">
+              <div
+                className={`h-full ${hud.health <= 30 ? 'bg-[#d94a38]' : 'bg-[#7d9c54]'}`}
+                style={{ width: `${hpPct}%` }}
+              />
+            </div>
+
+            <div className="flex items-center justify-between text-[11px] font-mono-tabular text-[#b8b39e] gap-2.5 mb-2">
+              <span>STM {hud.stamina}%</span>
+              <span aria-hidden="true">·</span>
+              <span>{hud.isCrouching ? 'CROUCH' : hud.isSprinting ? 'SPRINT' : 'STAND'}</span>
+              {hud.bleeding && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-[#e86958] font-semibold">BLEEDING</span>
+                </>
+              )}
+            </div>
+
+            {/* Rank, Class & Career XP Bar */}
+            <div className="pt-1.5 border-t border-[#293124]">
+              <div className="flex items-center justify-between text-[10px] font-mono-tabular text-[#c89b3c] tabular-nums gap-2">
+                <span className="truncate">LV {prog.level} · {prog.rankTitle} · {activeClassSpec.name}</span>
+                <span className="text-[#9ea38f] shrink-0">
+                  {prog.xpIntoLevel}/{prog.xpForNextLevel} XP
+                </span>
+              </div>
+              <div className="w-full h-1 bg-[#23291f] rounded overflow-hidden mt-1">
+                <div className="h-full bg-[#c89b3c]" style={{ width: `${xpPct}%` }} />
+              </div>
+            </div>
+
+            {/* Terrain Zone & Uniform Camo Bonus Status */}
+            <div className="pt-1.5 mt-1.5 border-t border-[#293124] flex items-center justify-between gap-2 text-[10px] font-mono-tabular">
+              <span className="text-[#a9ad99] truncate">{terrainLabel}</span>
+              <span
+                className={`shrink-0 ${
+                  hud.terrainCamoActive ? 'text-[#9cc47d] font-semibold' : 'text-[#8e9381]'
+                }`}
+              >
+                {uniformDisplayName} · {hud.terrainCamoActive ? 'CAMO ACTIVE' : 'STANDBY'}
+              </span>
+            </div>
+          </div>
+
+          {/* Bottom-Right: Weapon Loadout, Attachments & Ammo */}
+          <div className="bg-[#121610]/88 border border-[#3a4433] rounded px-3.5 py-2.5 text-right pointer-events-auto">
+            <div className="flex items-baseline justify-end gap-2">
+              <span className="text-2xl font-display font-bold text-[#ece9df] tabular-nums">
+                {weaponState.mag}
+              </span>
+              <span className="text-sm font-mono-tabular text-[#8e9381] tabular-nums">
+                / {weaponState.reserve}
+              </span>
+            </div>
+            <div className="flex items-center justify-end gap-2 text-[11px] font-mono-tabular text-[#c89b3c] mt-0.5">
+              <span>{spec.name}</span>
+              <span aria-hidden="true">·</span>
+              <span>{weaponState.fireMode}</span>
+              <span aria-hidden="true">·</span>
+              <span className="text-[#b8b39e]">FRAG {hud.grenades}</span>
+            </div>
+            {attTags.length > 0 && (
+              <div className="text-[10px] font-mono-tabular text-[#9cc47d] mt-0.5">
+                {attTags.join(' · ')}
+              </div>
+            )}
             <div className="flex items-center justify-end gap-1.5 mt-2">
               {(['m16a1', 'm60', 'm1911'] as WeaponId[]).map((id, idx) => (
                 <button
@@ -649,9 +735,9 @@ export function GameHUD({
                 </button>
               ))}
             </div>
-          )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

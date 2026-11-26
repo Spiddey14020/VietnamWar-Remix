@@ -58,6 +58,7 @@ import {
   type DailyMissionMetric,
   type DailyMissionState,
   type GamePhase,
+  type GraphicsQuality,
   type HeadgearId,
   type HowitzerGunState,
   type HudSnapshot,
@@ -97,6 +98,7 @@ const DAILY_MISSIONS_KEY = 'vietnam_war_daily_missions_v1';
 const CHAR_LOADOUT_KEY = 'vietnam_war_char_loadout_v1';
 const CUSTOM_CAMO_STORAGE_KEY = 'vietnam_war_custom_camo_v1';
 const CAMPAIGN_STORAGE_KEY = 'vietnam_war_campaign_v1';
+const PROXIMITY_VOICE_KEY = 'vietnam_war_proximity_voice_v1';
 
 const RANK_LADDER: { minXp: number; title: string }[] = [
   { minXp: 0, title: 'PVT E-1' },
@@ -240,6 +242,11 @@ export class VietnamGameEngine {
   private onHudUpdate: (snapshot: HudSnapshot) => void;
   private onPhaseChange: (phase: GamePhase) => void;
   private audio = new TacticalAudioEngine();
+  private simPointmanPos = new THREE.Vector3(LZ_BRAVO_POS.x - 8, 0, LZ_BRAVO_POS.z + 6);
+  private simRtoPos = new THREE.Vector3(LZ_BRAVO_POS.x + 9, 0, LZ_BRAVO_POS.z + 7);
+  private squadChatterCooldown = 4.2;
+  private enemyRadioChatterCooldown = 3.5;
+  private lastEnemyRadioTime = -10;
 
   private renderer!: THREE.WebGLRenderer;
   private scene!: THREE.Scene;
@@ -247,6 +254,9 @@ export class VietnamGameEngine {
   private weaponCamera!: THREE.PerspectiveCamera;
   private weaponScene!: THREE.Scene;
   private isSoftwareGl = false;
+  private isMobileDevice = false;
+  private graphicsQuality: GraphicsQuality = 'auto';
+  private contextLost = false;
   private disposed = false;
   private frameId = 0;
   private lastTime = 0;
@@ -494,6 +504,7 @@ export class VietnamGameEngine {
     this.loadCustomCamos();
     this.loadCampaignState();
     this.loadCharacterLoadouts();
+    this.loadProximityVoiceSetting();
     this.initRendererAndScene();
     this.buildWorld();
     this.buildViewmodels();
@@ -510,6 +521,11 @@ export class VietnamGameEngine {
   }
 
   private initRendererAndScene(): void {
+    this.isMobileDevice =
+      /android|mobile|tablet|ipad|iphone/i.test(navigator.userAgent) ||
+      window.matchMedia('(pointer: coarse)').matches ||
+      (navigator.maxTouchPoints > 0 && !window.matchMedia('(pointer: fine)').matches);
+
     this.isSoftwareGl = (() => {
       const probe = document.createElement('canvas').getContext('webgl2');
       if (!probe) return true;
@@ -521,20 +537,23 @@ export class VietnamGameEngine {
     })();
 
     this.renderer = new THREE.WebGLRenderer({
-      antialias: !this.isSoftwareGl,
+      antialias: !this.isSoftwareGl && !this.isMobileDevice,
       powerPreference: 'high-performance',
     });
-    this.renderer.setSize(this.container.clientWidth || window.innerWidth, this.container.clientHeight || window.innerHeight);
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    this.renderer.domElement.style.touchAction = 'none';
+    this.renderer.setSize(
+      this.container.clientWidth || window.innerWidth,
+      this.container.clientHeight || window.innerHeight,
+    );
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.14;
-    this.renderer.shadowMap.enabled = !this.isSoftwareGl;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.autoClear = false;
     this.container.appendChild(this.renderer.domElement);
 
-    const aspect = (this.container.clientWidth || window.innerWidth) / Math.max(1, this.container.clientHeight || window.innerHeight);
+    const aspect =
+      (this.container.clientWidth || window.innerWidth) /
+      Math.max(1, this.container.clientHeight || window.innerHeight);
 
     this.scene = new THREE.Scene();
     this.bgColor.set('#5a6b54');
@@ -552,21 +571,17 @@ export class VietnamGameEngine {
     // Warm tropical sun/moon key light + cool humid hemisphere fill
     this.sunLight = new THREE.DirectionalLight(0xffe7bd, 2.2);
     this.sunLight.position.set(65, 95, 42);
-    if (!this.isSoftwareGl) {
-      this.sunLight.castShadow = true;
-      this.sunLight.shadow.mapSize.width = 2048;
-      this.sunLight.shadow.mapSize.height = 2048;
-      const d = 115;
-      this.sunLight.shadow.camera.left = -d;
-      this.sunLight.shadow.camera.right = d;
-      this.sunLight.shadow.camera.top = d;
-      this.sunLight.shadow.camera.bottom = -d;
-      this.sunLight.shadow.camera.near = 10;
-      this.sunLight.shadow.camera.far = 260;
-      this.sunLight.shadow.bias = -0.0005;
-      this.sunLight.shadow.normalBias = 0.02;
-    }
+    const d = 115;
+    this.sunLight.shadow.camera.left = -d;
+    this.sunLight.shadow.camera.right = d;
+    this.sunLight.shadow.camera.top = d;
+    this.sunLight.shadow.camera.bottom = -d;
+    this.sunLight.shadow.camera.near = 10;
+    this.sunLight.shadow.camera.far = 260;
+    this.sunLight.shadow.bias = -0.0005;
+    this.sunLight.shadow.normalBias = 0.02;
     this.scene.add(this.sunLight);
+    this.applyGraphicsQuality();
 
     this.hemiLight = new THREE.HemisphereLight(0x9bb8b3, 0x3b4029, 0.95);
     this.scene.add(this.hemiLight);
@@ -1187,6 +1202,19 @@ export class VietnamGameEngine {
     this.playerVel.set(0, 0, 0);
     this.yaw = 0.08;
     this.pitch = 0;
+    this.simPointmanPos.set(
+      this.playerPos.x - 8.5,
+      groundHeightAt(this.playerPos.x - 8.5, this.playerPos.z + 6.5) + 1.6,
+      this.playerPos.z + 6.5,
+    );
+    this.simRtoPos.set(
+      this.playerPos.x + 9.5,
+      groundHeightAt(this.playerPos.x + 9.5, this.playerPos.z + 7.5) + 1.6,
+      this.playerPos.z + 7.5,
+    );
+    this.squadChatterCooldown = 3.8 + Math.random() * 2.5;
+    this.enemyRadioChatterCooldown = 3.5 + Math.random() * 3.0;
+    this.lastEnemyRadioTime = -10;
     const prog = this.computeProgression(this.careerXp);
     this.careerLevel = prog.level;
     this.recomputeMaxHealth(true);
@@ -1645,6 +1673,36 @@ export class VietnamGameEngine {
     this.emitHud();
   }
 
+  private loadProximityVoiceSetting(): void {
+    try {
+      const saved = localStorage.getItem(PROXIMITY_VOICE_KEY);
+      if (saved === 'false' || saved === '0') {
+        this.audio.setProximityVoiceEnabled(false);
+      } else if (saved === 'true' || saved === '1') {
+        this.audio.setProximityVoiceEnabled(true);
+      }
+    } catch {
+      // ignore storage access issues
+    }
+  }
+
+  public setProximityVoiceEnabled(enabled: boolean): void {
+    this.audio.setProximityVoiceEnabled(enabled);
+    try {
+      localStorage.setItem(PROXIMITY_VOICE_KEY, enabled ? 'true' : 'false');
+    } catch {
+      // ignore storage access issues
+    }
+    this.showBanner(enabled ? 'PROXIMITY VOICE · 3D SQUAD AUDIO ON' : 'PROXIMITY VOICE · DISABLED');
+    this.emitHud();
+  }
+
+  public toggleProximityVoice(): boolean {
+    const next = !this.audio.isProximityVoiceEnabled();
+    this.setProximityVoiceEnabled(next);
+    return next;
+  }
+
   public callCounterBatteryFire(): void {
     if (this.phase !== 'playing') return;
     if (this.strikeCooldownSec > 0) return;
@@ -1674,6 +1732,47 @@ export class VietnamGameEngine {
 
   public setSensitivity(sens: number): void {
     this.sensitivity = Math.max(0.4, Math.min(2.2, sens));
+  }
+
+  public setGraphicsQuality(quality: GraphicsQuality): void {
+    this.graphicsQuality = quality;
+    this.applyGraphicsQuality();
+  }
+
+  private getTargetPixelRatio(): number {
+    if (this.isSoftwareGl || this.graphicsQuality === 'battery') return 1;
+    const dpr = window.devicePixelRatio || 1;
+    if (this.graphicsQuality === 'high') return Math.min(dpr, 2);
+    // Balanced mobile/tablet cap for smooth 60 FPS on Android GPUs
+    return this.isMobileDevice ? Math.min(dpr, 1.5) : Math.min(dpr, 2);
+  }
+
+  private applyGraphicsQuality(): void {
+    if (!this.renderer || !this.sunLight) return;
+    this.renderer.setPixelRatio(this.getTargetPixelRatio());
+
+    const enableShadows = !this.isSoftwareGl && this.graphicsQuality !== 'battery';
+    this.renderer.shadowMap.enabled = enableShadows;
+    this.sunLight.castShadow = enableShadows;
+
+    if (enableShadows) {
+      const highRes =
+        this.graphicsQuality === 'high' || (!this.isMobileDevice && this.graphicsQuality === 'auto');
+      this.renderer.shadowMap.type = highRes ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+      const targetSize = highRes ? 2048 : 1024;
+      if (
+        this.sunLight.shadow.mapSize.width !== targetSize ||
+        this.sunLight.shadow.mapSize.height !== targetSize
+      ) {
+        this.sunLight.shadow.mapSize.width = targetSize;
+        this.sunLight.shadow.mapSize.height = targetSize;
+        if (this.sunLight.shadow.map) {
+          this.sunLight.shadow.map.dispose();
+          this.sunLight.shadow.map = null;
+        }
+      }
+      this.renderer.shadowMap.needsUpdate = true;
+    }
   }
 
   public setTouchInput(partial: Partial<TouchInputState>): void {
@@ -3087,7 +3186,10 @@ export class VietnamGameEngine {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onWindowBlur);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
+    this.renderer.domElement.addEventListener('webglcontextlost', this.onContextLost);
+    this.renderer.domElement.addEventListener('webglcontextrestored', this.onContextRestored);
     this.renderer.domElement.addEventListener('mousemove', this.onMouseMove);
     this.renderer.domElement.addEventListener('mousedown', this.onMouseDown);
     window.addEventListener('mouseup', this.onMouseUp);
@@ -3103,7 +3205,30 @@ export class VietnamGameEngine {
     this.weaponCamera.aspect = w / h;
     this.weaponCamera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(this.getTargetPixelRatio());
+  };
+
+  private onContextLost = (e: Event): void => {
+    e.preventDefault();
+    this.contextLost = true;
+    this.onWindowBlur();
+  };
+
+  private onContextRestored = (): void => {
+    this.contextLost = false;
+    this.applyGraphicsQuality();
+    this.lastTime = performance.now();
+  };
+
+  private onVisibilityChange = (): void => {
+    if (document.hidden) {
+      this.onWindowBlur();
+      if (this.phase === 'playing') {
+        this.setPhase('paused');
+      }
+    } else {
+      this.lastTime = performance.now();
+    }
   };
 
   private onPointerLockChange = (): void => {
@@ -3118,6 +3243,9 @@ export class VietnamGameEngine {
     this.touchInput.firing = false;
     this.touchInput.moveX = 0;
     this.touchInput.moveY = 0;
+    this.touchInput.sprint = false;
+    this.touchInput.lookDeltaX = 0;
+    this.touchInput.lookDeltaY = 0;
   };
 
   private onContextMenu = (e: MouseEvent): void => {
@@ -3207,13 +3335,15 @@ export class VietnamGameEngine {
       this.lastTime = now;
       const dt = Math.min(rawDt, 0.05);
 
-      this.update(dt);
+      if (!this.contextLost) {
+        this.update(dt);
 
-      this.renderer.clear();
-      this.renderer.render(this.scene, this.camera);
-      if (this.phase === 'playing' || this.phase === 'paused') {
-        this.renderer.clearDepth();
-        this.renderer.render(this.weaponScene, this.weaponCamera);
+        this.renderer.clear();
+        this.renderer.render(this.scene, this.camera);
+        if (this.phase === 'playing' || this.phase === 'paused') {
+          this.renderer.clearDepth();
+          this.renderer.render(this.weaponScene, this.weaponCamera);
+        }
       }
 
       if (this.isSoftwareGl) {
@@ -3279,9 +3409,14 @@ export class VietnamGameEngine {
       posAttr.needsUpdate = true;
     }
 
-    // Consume touch look deltas smoothly
+    // Consume touch look deltas smoothly across Android phones and tablets
     if (this.touchInput.lookDeltaX !== 0 || this.touchInput.lookDeltaY !== 0) {
-      const ts = 0.0042 * this.sensitivity * (this.binocularZoom ? 0.38 : this.isAds ? 0.58 : 1.0);
+      const widthNorm = 840 / Math.max(380, Math.min(window.innerWidth || 840, 1280));
+      const ts =
+        0.0042 *
+        widthNorm *
+        this.sensitivity *
+        (this.binocularZoom ? 0.36 : this.isAds ? 0.56 : 1.0);
       this.yaw -= this.touchInput.lookDeltaX * ts;
       this.pitch = THREE.MathUtils.clamp(this.pitch - this.touchInput.lookDeltaY * ts, -1.38, 1.38);
       this.touchInput.lookDeltaX = 0;
@@ -3299,6 +3434,7 @@ export class VietnamGameEngine {
     this.updateObjectives(dt);
     this.updateArtilleryAndAmbience(dt);
     this.updateCameraAndViewmodel(dt);
+    this.updateSpatialAudioAndChatter(dt);
 
     // Huey rotor animation
     const rotorSpeed = this.objectives.find((o) => o.id === 'extract')?.active ? 26 : 2.2;
@@ -3469,6 +3605,205 @@ export class VietnamGameEngine {
     const rightX = Math.cos(this.yaw);
     const rightZ = -Math.sin(this.yaw);
     return THREE.MathUtils.clamp((dx * rightX + dz * rightZ) / len, -1, 1);
+  }
+
+  private triggerEnemyRadioChatter(
+    speaker: EnemyActor,
+    situation: 'patrol' | 'contact' | 'flank' | 'suppress' | 'wounded' | 'commander',
+  ): void {
+    if (this.elapsedSec - this.lastEnemyRadioTime < 2.6) return;
+    const dist = Math.hypot(speaker.x - this.playerPos.x, speaker.z - this.playerPos.z);
+    if (dist > 92) return;
+    this.lastEnemyRadioTime = this.elapsedSec;
+    const pan = this.computePanToWorld(speaker.x, speaker.z);
+    this.audio.playEnemyVietnameseRadio(
+      `enemy-${speaker.id}`,
+      situation,
+      speaker.x,
+      speaker.y + 1.55,
+      speaker.z,
+      dist,
+      pan,
+    );
+  }
+
+  private updateSpatialAudioAndChatter(dt: number): void {
+    // 1. Update Web Audio 3D listener pose to match player's head & look direction
+    _v1.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    _v2.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    this.audio.updateListenerPose(
+      this.camera.position.x,
+      this.camera.position.y,
+      this.camera.position.z,
+      _v1.x,
+      _v1.y,
+      _v1.z,
+      _v2.x,
+      _v2.y,
+      _v2.z,
+    );
+
+    // 2. Smoothly guide simulated fireteam wingman emitters on flanks around the player
+    const rightX = Math.cos(this.yaw);
+    const rightZ = -Math.sin(this.yaw);
+    const backX = Math.sin(this.yaw);
+    const backZ = Math.cos(this.yaw);
+    const sway = Math.sin(this.elapsedSec * 0.42) * 2.2;
+
+    const targetPointmanX = this.playerPos.x - rightX * (8.5 + sway) + backX * 5.8;
+    const targetPointmanZ = this.playerPos.z - rightZ * (8.5 + sway) + backZ * 5.8;
+    const targetRtoX = this.playerPos.x + rightX * (9.5 - sway) + backX * 7.2;
+    const targetRtoZ = this.playerPos.z + rightZ * (9.5 - sway) + backZ * 7.2;
+
+    const followAlpha = Math.min(1, dt * 1.4);
+    this.simPointmanPos.x = THREE.MathUtils.lerp(this.simPointmanPos.x, targetPointmanX, followAlpha);
+    this.simPointmanPos.z = THREE.MathUtils.lerp(this.simPointmanPos.z, targetPointmanZ, followAlpha);
+    this.simPointmanPos.y = groundHeightAt(this.simPointmanPos.x, this.simPointmanPos.z) + 1.6;
+
+    this.simRtoPos.x = THREE.MathUtils.lerp(this.simRtoPos.x, targetRtoX, followAlpha);
+    this.simRtoPos.z = THREE.MathUtils.lerp(this.simRtoPos.z, targetRtoZ, followAlpha);
+    this.simRtoPos.y = groundHeightAt(this.simRtoPos.x, this.simRtoPos.z) + 1.6;
+
+    this.audio.updateSpatialSource(
+      'sim-pointman',
+      this.simPointmanPos.x,
+      this.simPointmanPos.y,
+      this.simPointmanPos.z,
+    );
+    this.audio.updateSpatialSource(
+      'sim-rto',
+      this.simRtoPos.x,
+      this.simRtoPos.y,
+      this.simRtoPos.z,
+    );
+
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      this.audio.updateSpatialSource(`enemy-${e.id}`, e.x, e.y + 1.55, e.z);
+    }
+
+    // 3. Simulated local squad proximity voice chatter (when Proximity Voice is enabled)
+    if (this.audio.isProximityVoiceEnabled()) {
+      this.squadChatterCooldown -= dt;
+      if (this.squadChatterCooldown <= 0) {
+        const inCombat = this.enemies.some(
+          (e) => e.alive && e.state !== 'patrol' && Math.hypot(e.x - this.playerPos.x, e.z - this.playerPos.z) < 55,
+        );
+        this.squadChatterCooldown = inCombat ? 5.2 + Math.random() * 4.2 : 7.5 + Math.random() * 5.5;
+
+        const nearbyStations: {
+          id: string;
+          kind: 'howitzer' | 'fdc' | 'huey' | 'sentry';
+          x: number;
+          y: number;
+          z: number;
+        }[] = [];
+
+        for (const gun of this.howitzers) {
+          if (Math.hypot(gun.x - this.playerPos.x, gun.z - this.playerPos.z) < 34) {
+            nearbyStations.push({ id: `gun-${gun.state.id}`, kind: 'howitzer', x: gun.x, y: gun.y + 1.6, z: gun.z });
+          }
+        }
+        if (Math.hypot(this.fdcPos.x - this.playerPos.x, this.fdcPos.z - this.playerPos.z) < 32) {
+          nearbyStations.push({
+            id: 'station-fdc',
+            kind: 'fdc',
+            x: this.fdcPos.x,
+            y: groundHeightAt(this.fdcPos.x, this.fdcPos.z) + 1.5,
+            z: this.fdcPos.z,
+          });
+        }
+        if (this.huey?.group) {
+          const hx = this.huey.group.position.x;
+          const hz = this.huey.group.position.z;
+          if (Math.hypot(hx - this.playerPos.x, hz - this.playerPos.z) < 34) {
+            nearbyStations.push({
+              id: 'station-huey',
+              kind: 'huey',
+              x: hx,
+              y: this.huey.group.position.y + 1.7,
+              z: hz,
+            });
+          }
+        }
+        const towerX = 11;
+        const towerZ = LZ_BRAVO_POS.z - 4;
+        if (Math.hypot(towerX - this.playerPos.x, towerZ - this.playerPos.z) < 32) {
+          nearbyStations.push({
+            id: 'station-sentry',
+            kind: 'sentry',
+            x: towerX,
+            y: groundHeightAt(towerX, towerZ) + 4.2,
+            z: towerZ,
+          });
+        }
+
+        if (nearbyStations.length > 0 && Math.random() < 0.55) {
+          const pick = nearbyStations[Math.floor(Math.random() * nearbyStations.length)];
+          this.audio.playSquadProximityVoice(
+            pick.id,
+            pick.kind,
+            pick.x,
+            pick.y,
+            pick.z,
+            this.computePanToWorld(pick.x, pick.z),
+          );
+        } else if (Math.random() < 0.55) {
+          this.audio.playSquadProximityVoice(
+            'sim-pointman',
+            'pointman',
+            this.simPointmanPos.x,
+            this.simPointmanPos.y,
+            this.simPointmanPos.z,
+            this.computePanToWorld(this.simPointmanPos.x, this.simPointmanPos.z),
+          );
+        } else {
+          this.audio.playSquadProximityVoice(
+            'sim-rto',
+            'rto',
+            this.simRtoPos.x,
+            this.simRtoPos.y,
+            this.simRtoPos.z,
+            this.computePanToWorld(this.simRtoPos.x, this.simRtoPos.z),
+          );
+        }
+      }
+    }
+
+    // 4. Random enemy AI Vietnamese radio chatter
+    this.enemyRadioChatterCooldown -= dt;
+    if (this.enemyRadioChatterCooldown <= 0) {
+      const candidates: { enemy: EnemyActor; dist: number }[] = [];
+      for (const e of this.enemies) {
+        if (!e.alive) continue;
+        const d = Math.hypot(e.x - this.playerPos.x, e.z - this.playerPos.z);
+        if (d <= 88) {
+          candidates.push({ enemy: e, dist: d });
+        }
+      }
+      if (candidates.length > 0) {
+        candidates.sort((a, b) => a.dist - b.dist);
+        const poolLimit = Math.min(candidates.length, 5);
+        const chosen = candidates[Math.floor(Math.random() * poolLimit)].enemy;
+        const situation: 'patrol' | 'contact' | 'flank' | 'suppress' | 'wounded' | 'commander' =
+          chosen.state === 'retreat'
+            ? 'wounded'
+            : chosen.role === 'commander' && chosen.state !== 'patrol'
+              ? 'commander'
+              : chosen.state === 'flank' || chosen.state === 'bound'
+                ? 'flank'
+                : chosen.state === 'suppress_pin'
+                  ? 'suppress'
+                  : chosen.state === 'patrol'
+                    ? 'patrol'
+                    : 'contact';
+        this.triggerEnemyRadioChatter(chosen, situation);
+        const activeFire = chosen.state !== 'patrol';
+        this.enemyRadioChatterCooldown = activeFire ? 4.4 + Math.random() * 4.0 : 6.8 + Math.random() * 5.2;
+      } else {
+        this.enemyRadioChatterCooldown = 4.0;
+      }
+    }
   }
 
   private updateArtilleryAndAmbience(dt: number): void {
@@ -4917,6 +5252,9 @@ export class VietnamGameEngine {
                 : 'engage';
           this.assignEnemyCover(e);
           this.alertSquadNear(e.x, e.z, 26);
+          if (Math.random() < 0.72) {
+            this.triggerEnemyRadioChatter(e, 'contact');
+          }
         }
       } else if (e.hasLos && dist < alertRange && inSightCone && e.state === 'patrol') {
         e.lastKnownX = this.playerPos.x;
@@ -4946,6 +5284,9 @@ export class VietnamGameEngine {
         e.windupTimer = 0;
         e.model.muzzleFlash.visible = false;
         this.assignRearCover(e);
+        if (Math.random() < 0.65) {
+          this.triggerEnemyRadioChatter(e, 'wounded');
+        }
       }
 
       // Squad Commander rallies & coordinates pincer flanks / suppressive fire
@@ -4957,6 +5298,9 @@ export class VietnamGameEngine {
       ) {
         e.commandCooldown = 5.4 + Math.random() * 2.0;
         this.coordinateSquadTactics(e);
+        if (Math.random() < 0.8) {
+          this.triggerEnemyRadioChatter(e, 'commander');
+        }
       }
 
       // When running out of breath underwater, prioritize scrambling onto the nearest dry riverbank
@@ -5815,6 +6159,7 @@ export class VietnamGameEngine {
       muted: this.audio.isMuted(),
       ambienceVolume: this.audio.getAmbienceVolume(),
       sfxVolume: this.audio.getSfxVolume(),
+      proximityVoiceEnabled: this.audio.isProximityVoiceEnabled(),
       pointerLocked: this.pointerLocked,
       statusBanner: this.statusBanner,
       extractCountdown: this.extractCountdown,
@@ -5843,6 +6188,16 @@ export class VietnamGameEngine {
     this.onHudUpdate(this.getHudSnapshot());
   }
 
+  public reloadProfileFromStorage(): void {
+    this.loadCareerXp();
+    this.loadCustomCamos();
+    this.loadCampaignState();
+    this.loadCharacterLoadouts();
+    this.resetMissionState(this.phase === 'title' ? 'title' : 'paused');
+    this.showBanner('GOOGLE DRIVE CLOUD SAVE RESTORED');
+    this.emitHud();
+  }
+
   public dispose(): void {
     this.disposed = true;
     cancelAnimationFrame(this.frameId);
@@ -5852,7 +6207,10 @@ export class VietnamGameEngine {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onWindowBlur);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
+    this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLost);
+    this.renderer.domElement.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.renderer.domElement.removeEventListener('mousemove', this.onMouseMove);
     this.renderer.domElement.removeEventListener('mousedown', this.onMouseDown);
     window.removeEventListener('mouseup', this.onMouseUp);

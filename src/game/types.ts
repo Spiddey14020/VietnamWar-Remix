@@ -6,6 +6,8 @@ export type FireMode = 'AUTO' | 'SEMI';
 
 export type ControlMode = 'auto' | 'touch' | 'desktop';
 
+export type GraphicsQuality = 'auto' | 'high' | 'battery';
+
 export type OpticAttachment = 'iron' | 'colt_scope' | 'oeg_dot';
 export type MuzzleAttachment = 'standard' | 'suppressor' | 'compensator';
 export type UnderbarrelAttachment = 'standard' | 'extended_mag' | 'bipod_grip';
@@ -1129,6 +1131,7 @@ export interface HudSnapshot {
   muted: boolean;
   ambienceVolume: number;
   sfxVolume: number;
+  proximityVoiceEnabled: boolean;
   pointerLocked: boolean;
   statusBanner: string | null;
   extractCountdown: number | null;

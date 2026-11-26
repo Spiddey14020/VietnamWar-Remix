@@ -9,6 +9,7 @@ export class TacticalAudioEngine {
   private sfxDryBus: WaveShaperNode | null = null;
   private valleyReverb: ConvolverNode | null = null;
   private reverbReturnGain: GainNode | null = null;
+  private voiceGain: GainNode | null = null;
 
   private pinkBedBuffer: AudioBuffer | null = null;
   private whiteCrackBuffer: AudioBuffer | null = null;
@@ -32,6 +33,12 @@ export class TacticalAudioEngine {
   private muted = false;
   private ambienceVolume = 0.78;
   private sfxVolume = 0.85;
+  private proximityVoiceEnabled = true;
+  private activeSpatialVoices: {
+    sourceId: string;
+    panner: PannerNode;
+    expiresAt: number;
+  }[] = [];
 
   public isMuted(): boolean {
     return this.muted;
@@ -43,6 +50,22 @@ export class TacticalAudioEngine {
 
   public getSfxVolume(): number {
     return this.sfxVolume;
+  }
+
+  public isProximityVoiceEnabled(): boolean {
+    return this.proximityVoiceEnabled;
+  }
+
+  public setProximityVoiceEnabled(enabled: boolean): void {
+    this.proximityVoiceEnabled = enabled;
+    if (this.voiceGain && this.ctx) {
+      this.voiceGain.gain.setTargetAtTime(enabled ? 0.95 : 0, this.ctx.currentTime, 0.04);
+    }
+  }
+
+  public toggleProximityVoice(): boolean {
+    this.setProximityVoiceEnabled(!this.proximityVoiceEnabled);
+    return this.proximityVoiceEnabled;
   }
 
   public setMuted(muted: boolean): void {
@@ -112,6 +135,10 @@ export class TacticalAudioEngine {
       this.reverbReturnGain.gain.value = 0.42;
       this.valleyReverb.connect(this.reverbReturnGain);
       this.reverbReturnGain.connect(this.sfxGain);
+
+      this.voiceGain = this.ctx.createGain();
+      this.voiceGain.gain.value = this.proximityVoiceEnabled ? 0.95 : 0;
+      this.voiceGain.connect(this.sfxGain);
 
       this.pinkBedBuffer = this.createPinkBedBuffer(4.0);
       this.whiteCrackBuffer = this.createWhiteCrackBuffer(1.5);
@@ -1244,7 +1271,609 @@ export class TacticalAudioEngine {
     this.playPrC25RadioBurst([980, 1280, 1680]);
   }
 
+  public updateListenerPose(
+    px: number,
+    py: number,
+    pz: number,
+    fx: number,
+    fy: number,
+    fz: number,
+    ux: number,
+    uy: number,
+    uz: number,
+  ): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const listener = this.ctx.listener;
+
+    if (listener.positionX) {
+      listener.positionX.setValueAtTime(px, now);
+      listener.positionY.setValueAtTime(py, now);
+      listener.positionZ.setValueAtTime(pz, now);
+      listener.forwardX.setValueAtTime(fx, now);
+      listener.forwardY.setValueAtTime(fy, now);
+      listener.forwardZ.setValueAtTime(fz, now);
+      listener.upX.setValueAtTime(ux, now);
+      listener.upY.setValueAtTime(uy, now);
+      listener.upZ.setValueAtTime(uz, now);
+    } else if (listener.setPosition) {
+      listener.setPosition(px, py, pz);
+      listener.setOrientation(fx, fy, fz, ux, uy, uz);
+    }
+
+    if (this.activeSpatialVoices.length > 0) {
+      for (let i = this.activeSpatialVoices.length - 1; i >= 0; i--) {
+        if (this.activeSpatialVoices[i].expiresAt <= now) {
+          this.activeSpatialVoices.splice(i, 1);
+        }
+      }
+    }
+  }
+
+  public updateSpatialSource(sourceId: string, x: number, y: number, z: number): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    for (const v of this.activeSpatialVoices) {
+      if (v.sourceId !== sourceId || v.expiresAt <= now) continue;
+      if (v.panner.positionX) {
+        v.panner.positionX.setTargetAtTime(x, now, 0.04);
+        v.panner.positionY.setTargetAtTime(y, now, 0.04);
+        v.panner.positionZ.setTargetAtTime(z, now, 0.04);
+      } else if (v.panner.setPosition) {
+        v.panner.setPosition(x, y, z);
+      }
+    }
+  }
+
+  private createSpatialPannerNode(
+    sourceId: string,
+    x: number,
+    y: number,
+    z: number,
+    refDistance: number,
+    maxDistance: number,
+    rolloffFactor: number,
+    durationSec: number,
+    dest: AudioNode,
+  ): PannerNode {
+    const ctx = this.ctx!;
+    const panner = ctx.createPanner();
+    panner.panningModel = 'HRTF';
+    panner.distanceModel = 'inverse';
+    panner.refDistance = refDistance;
+    panner.maxDistance = maxDistance;
+    panner.rolloffFactor = rolloffFactor;
+    panner.coneInnerAngle = 360;
+    panner.coneOuterAngle = 360;
+    panner.coneOuterGain = 0;
+
+    const now = ctx.currentTime;
+    if (panner.positionX) {
+      panner.positionX.setValueAtTime(x, now);
+      panner.positionY.setValueAtTime(y, now);
+      panner.positionZ.setValueAtTime(z, now);
+    } else if (panner.setPosition) {
+      panner.setPosition(x, y, z);
+    }
+
+    panner.connect(dest);
+    this.activeSpatialVoices.push({
+      sourceId,
+      panner,
+      expiresAt: now + durationSec + 0.35,
+    });
+    return panner;
+  }
+
+  private scheduleSyllableFormants(
+    startTime: number,
+    basePitchHz: number,
+    vowel: 'a' | 'e' | 'i' | 'o' | 'u' | 'er',
+    tone: 'ngang' | 'huyen' | 'sac' | 'hoi' | 'nga' | 'nang',
+    durSec: number,
+    onset: 'none' | 'stop' | 'fric' | 'nasal',
+    coda: 'none' | 'stop' | 'fric' | 'nasal',
+    dest: AudioNode,
+    gainScale: number,
+  ): void {
+    if (!this.ctx || !this.whiteCrackBuffer) return;
+    const ctx = this.ctx;
+
+    const formantMap: Record<'a' | 'e' | 'i' | 'o' | 'u' | 'er', [number, number, number]> = {
+      a: [730, 1180, 2480],
+      e: [500, 1850, 2550],
+      i: [315, 2200, 2880],
+      o: [495, 885, 2400],
+      u: [325, 795, 2280],
+      er: [480, 1340, 2420],
+    };
+    const [f1, f2, f3] = formantMap[vowel];
+
+    // Consonant onset transient (plosive puff / fricative hiss / nasal murmur)
+    if (onset === 'fric') {
+      const n = ctx.createBufferSource();
+      n.buffer = this.whiteCrackBuffer;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 3400 + Math.random() * 700;
+      bp.Q.value = 1.8;
+      const ng = ctx.createGain();
+      ng.gain.setValueAtTime(0.001, startTime);
+      ng.gain.linearRampToValueAtTime(0.18 * gainScale, startTime + 0.01);
+      ng.gain.exponentialRampToValueAtTime(0.001, startTime + 0.036);
+      n.connect(bp);
+      bp.connect(ng);
+      ng.connect(dest);
+      n.start(startTime, Math.random() * 0.4, 0.042);
+    } else if (onset === 'stop') {
+      const n = ctx.createBufferSource();
+      n.buffer = this.whiteCrackBuffer;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 1450 + Math.random() * 550;
+      bp.Q.value = 2.0;
+      const ng = ctx.createGain();
+      ng.gain.setValueAtTime(0.22 * gainScale, startTime);
+      ng.gain.exponentialRampToValueAtTime(0.001, startTime + 0.018);
+      n.connect(bp);
+      bp.connect(ng);
+      ng.connect(dest);
+      n.start(startTime, Math.random() * 0.5, 0.022);
+    }
+
+    const vStart = startTime + (onset === 'fric' ? 0.024 : onset === 'stop' ? 0.012 : 0);
+    const vDur = Math.max(0.06, durSec - (coda !== 'none' ? 0.018 : 0));
+
+    // Glottal pulse train (sawtooth + soft chest triangle)
+    const glottal = ctx.createOscillator();
+    glottal.type = 'sawtooth';
+    const subChest = ctx.createOscillator();
+    subChest.type = 'triangle';
+
+    // Pitch contour shaping (supports 6 Vietnamese tones + English stress)
+    const setPitchContour = (osc: OscillatorNode, mult: number) => {
+      const f0 = basePitchHz * mult;
+      if (tone === 'huyen') {
+        osc.frequency.setValueAtTime(f0 * 0.9, vStart);
+        osc.frequency.exponentialRampToValueAtTime(f0 * 0.72, vStart + vDur);
+      } else if (tone === 'sac') {
+        osc.frequency.setValueAtTime(f0 * 0.94, vStart);
+        osc.frequency.exponentialRampToValueAtTime(f0 * 1.33, vStart + vDur);
+      } else if (tone === 'hoi') {
+        osc.frequency.setValueAtTime(f0 * 0.88, vStart);
+        osc.frequency.exponentialRampToValueAtTime(f0 * 0.69, vStart + vDur * 0.52);
+        osc.frequency.exponentialRampToValueAtTime(f0 * 1.07, vStart + vDur);
+      } else if (tone === 'nga') {
+        osc.frequency.setValueAtTime(f0 * 0.94, vStart);
+        osc.frequency.exponentialRampToValueAtTime(f0 * 0.81, vStart + vDur * 0.42);
+        osc.frequency.exponentialRampToValueAtTime(f0 * 1.3, vStart + vDur);
+      } else if (tone === 'nang') {
+        osc.frequency.setValueAtTime(f0 * 0.84, vStart);
+        osc.frequency.exponentialRampToValueAtTime(f0 * 0.59, vStart + vDur * 0.85);
+      } else {
+        osc.frequency.setValueAtTime(f0 * 1.01, vStart);
+        osc.frequency.linearRampToValueAtTime(f0 * 0.97, vStart + vDur);
+      }
+    };
+    setPitchContour(glottal, 1.0);
+    setPitchContour(subChest, 0.5);
+
+    const chestGain = ctx.createGain();
+    chestGain.gain.value = 0.22;
+    subChest.connect(chestGain);
+
+    // Three parallel vocal-tract formant resonators
+    const formantEnv = ctx.createGain();
+    formantEnv.gain.setValueAtTime(0.001, vStart);
+    formantEnv.gain.linearRampToValueAtTime(0.32 * gainScale, vStart + Math.min(0.025, vDur * 0.22));
+    if (tone === 'nga') {
+      // Mid-syllable glottalization dip characteristic of northern ngã tone
+      formantEnv.gain.linearRampToValueAtTime(0.11 * gainScale, vStart + vDur * 0.44);
+      formantEnv.gain.linearRampToValueAtTime(0.31 * gainScale, vStart + vDur * 0.6);
+    }
+    const endAmp = tone === 'nang' ? 0.001 : 0.24 * gainScale;
+    formantEnv.gain.linearRampToValueAtTime(endAmp, vStart + vDur * 0.78);
+    formantEnv.gain.exponentialRampToValueAtTime(0.001, vStart + vDur);
+
+    const freqs = [f1, f2, f3];
+    const gains = [1.0, 0.56, 0.22];
+    const qs = [6.5, 8.2, 9.5];
+    for (let i = 0; i < 3; i++) {
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(freqs[i] * (0.94 + Math.random() * 0.12), vStart);
+      bp.frequency.linearRampToValueAtTime(freqs[i], vStart + vDur * 0.45);
+      bp.Q.value = qs[i];
+
+      const fg = ctx.createGain();
+      fg.gain.value = gains[i];
+
+      glottal.connect(bp);
+      chestGain.connect(bp);
+      bp.connect(fg);
+      fg.connect(formantEnv);
+    }
+
+    formantEnv.connect(dest);
+    glottal.start(vStart);
+    subChest.start(vStart);
+    glottal.stop(vStart + vDur + 0.015);
+    subChest.stop(vStart + vDur + 0.015);
+
+    if (coda === 'stop' || coda === 'fric') {
+      const tEnd = vStart + vDur * 0.85;
+      const cn = ctx.createBufferSource();
+      cn.buffer = this.whiteCrackBuffer;
+      const cbp = ctx.createBiquadFilter();
+      cbp.type = 'bandpass';
+      cbp.frequency.value = coda === 'fric' ? 3200 : 1650;
+      cbp.Q.value = coda === 'fric' ? 1.8 : 2.1;
+      const cg = ctx.createGain();
+      cg.gain.setValueAtTime(0.12 * gainScale, tEnd);
+      cg.gain.exponentialRampToValueAtTime(0.001, tEnd + (coda === 'fric' ? 0.032 : 0.018));
+      cn.connect(cbp);
+      cbp.connect(cg);
+      cg.connect(dest);
+      cn.start(tEnd, Math.random() * 0.3, coda === 'fric' ? 0.038 : 0.024);
+    }
+  }
+
+  public playSquadProximityVoice(
+    sourceId: string,
+    speakerKind: 'pointman' | 'rto' | 'howitzer' | 'fdc' | 'huey' | 'sentry',
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+    panFallback: number,
+  ): void {
+    if (!this.ctx || !this.voiceGain || !this.whiteCrackBuffer || this.muted || !this.proximityVoiceEnabled) {
+      return;
+    }
+
+    type Syl = {
+      v: 'a' | 'e' | 'i' | 'o' | 'u' | 'er';
+      t: 'ngang' | 'huyen' | 'sac' | 'hoi' | 'nga' | 'nang';
+      d: number;
+      o: 'none' | 'stop' | 'fric' | 'nasal';
+      c: 'none' | 'stop' | 'fric' | 'nasal';
+      g?: number;
+    };
+
+    const phrasesByRole: Record<typeof speakerKind, Syl[][]> = {
+      pointman: [
+        [
+          { v: 'e', t: 'sac', d: 0.14, o: 'fric', c: 'stop' }, // Check
+          { v: 'a', t: 'ngang', d: 0.14, o: 'none', c: 'nasal' }, // flank
+          { v: 'o', t: 'huyen', d: 0.18, o: 'stop', c: 'stop', g: 0.05 }, // low
+          { v: 'u', t: 'sac', d: 0.16, o: 'nasal', c: 'nasal' }, // move
+          { v: 'a', t: 'huyen', d: 0.17, o: 'stop', c: 'stop' }, // fast
+        ],
+        [
+          { v: 'o', t: 'ngang', d: 0.15, o: 'stop', c: 'nasal' }, // On
+          { v: 'o', t: 'sac', d: 0.13, o: 'none', c: 'none' }, // your
+          { v: 'i', t: 'sac', d: 0.21, o: 'fric', c: 'stop', g: 0.06 }, // six
+          { v: 'e', t: 'ngang', d: 0.15, o: 'stop', c: 'stop' }, // stay
+          { v: 'er', t: 'huyen', d: 0.2, o: 'stop', c: 'stop' }, // sharp
+        ],
+        [
+          { v: 'a', t: 'sac', d: 0.15, o: 'stop', c: 'nasal' }, // Watch
+          { v: 'e', t: 'ngang', d: 0.13, o: 'fric', c: 'none' }, // the
+          { v: 'i', t: 'sac', d: 0.19, o: 'stop', c: 'none' }, // tree
+          { v: 'a', t: 'huyen', d: 0.22, o: 'nasal', c: 'nasal' }, // line
+        ],
+      ],
+      rto: [
+        [
+          { v: 'a', t: 'sac', d: 0.15, o: 'stop', c: 'none' }, // Bra-
+          { v: 'o', t: 'huyen', d: 0.16, o: 'none', c: 'none', g: 0.04 }, // vo
+          { v: 'a', t: 'sac', d: 0.15, o: 'stop', c: 'stop' }, // Ac-
+          { v: 'u', t: 'huyen', d: 0.17, o: 'stop', c: 'none', g: 0.05 }, // tual
+          { v: 'o', t: 'ngang', d: 0.16, o: 'none', c: 'stop' }, // cop-
+          { v: 'i', t: 'huyen', d: 0.18, o: 'stop', c: 'none' }, // y
+        ],
+        [
+          { v: 'a', t: 'ngang', d: 0.14, o: 'stop', c: 'nasal' }, // Comms
+          { v: 'i', t: 'sac', d: 0.17, o: 'stop', c: 'none', g: 0.05 }, // clear
+          { v: 'o', t: 'huyen', d: 0.15, o: 'stop', c: 'none' }, // push
+          { v: 'o', t: 'sac', d: 0.18, o: 'fric', c: 'stop' }, // north
+        ],
+      ],
+      howitzer: [
+        [
+          { v: 'er', t: 'sac', d: 0.16, o: 'fric', c: 'nasal' }, // Thun-
+          { v: 'er', t: 'huyen', d: 0.14, o: 'stop', c: 'none', g: 0.04 }, // der
+          { v: 'a', t: 'ngang', d: 0.17, o: 'none', c: 'nasal' }, // one
+          { v: 'e', t: 'sac', d: 0.16, o: 'none', c: 'none' }, // read-
+          { v: 'i', t: 'huyen', d: 0.18, o: 'stop', c: 'none' }, // y
+        ],
+        [
+          { v: 'e', t: 'sac', d: 0.15, o: 'stop', c: 'stop' }, // Check
+          { v: 'a', t: 'ngang', d: 0.16, o: 'none', c: 'nasal' }, // lan-
+          { v: 'er', t: 'huyen', d: 0.19, o: 'none', c: 'stop' }, // yard
+        ],
+      ],
+      fdc: [
+        [
+          { v: 'o', t: 'sac', d: 0.15, o: 'fric', c: 'none' }, // Fire
+          { v: 'i', t: 'ngang', d: 0.14, o: 'nasal', c: 'fric' }, // mis-
+          { v: 'er', t: 'huyen', d: 0.16, o: 'fric', c: 'nasal', g: 0.05 }, // sion
+          { v: 'o', t: 'sac', d: 0.15, o: 'stop', c: 'stop' }, // plot-
+          { v: 'e', t: 'huyen', d: 0.18, o: 'stop', c: 'stop' }, // ted
+        ],
+      ],
+      huey: [
+        [
+          { v: 'u', t: 'sac', d: 0.15, o: 'stop', c: 'fric' }, // Dust-
+          { v: 'o', t: 'huyen', d: 0.15, o: 'none', c: 'fric', g: 0.04 }, // off
+          { v: 'i', t: 'sac', d: 0.19, o: 'fric', c: 'stop', g: 0.05 }, // six
+          { v: 'o', t: 'ngang', d: 0.15, o: 'none', c: 'nasal' }, // on
+          { v: 'a', t: 'huyen', d: 0.19, o: 'stop', c: 'stop' }, // pad
+        ],
+      ],
+      sentry: [
+        [
+          { v: 'o', t: 'ngang', d: 0.16, o: 'fric', c: 'stop' }, // Sec-
+          { v: 'er', t: 'huyen', d: 0.15, o: 'stop', c: 'none', g: 0.04 }, // tor
+          { v: 'i', t: 'sac', d: 0.19, o: 'stop', c: 'none' }, // clear
+        ],
+      ],
+    };
+
+    const options = phrasesByRole[speakerKind];
+    const phrase = options[Math.floor(Math.random() * options.length)];
+    const totalDur = phrase.reduce((acc, s) => acc + s.d + (s.g ?? 0.03), 0) + 0.25;
+
+    const now = this.ctx.currentTime;
+    const basePitchByRole: Record<typeof speakerKind, number> = {
+      pointman: 118,
+      rto: 132,
+      howitzer: 104,
+      fdc: 124,
+      huey: 136,
+      sentry: 112,
+    };
+    const voicePitch = basePitchByRole[speakerKind] + (Math.random() - 0.5) * 10;
+
+    // 3D HRTF Spatial Panner anchored to squad speaker's world position
+    const destNode = typeof this.ctx.createPanner === 'function'
+      ? this.createSpatialPannerNode(
+          sourceId,
+          worldX,
+          worldY,
+          worldZ,
+          4.5,
+          48,
+          1.45,
+          totalDur,
+          this.voiceGain,
+        )
+      : this.createPanner(panFallback, this.voiceGain);
+
+    // Subtle close-talk / jungle air tone shaping
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 155;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 4400;
+
+    hp.connect(lp);
+    lp.connect(destNode);
+    if (this.valleyReverb) {
+      const revSend = this.ctx.createGain();
+      revSend.gain.value = 0.16;
+      lp.connect(revSend);
+      revSend.connect(this.valleyReverb);
+    }
+
+    let cursor = now + 0.03;
+    for (const s of phrase) {
+      this.scheduleSyllableFormants(
+        cursor,
+        voicePitch,
+        s.v,
+        s.t,
+        s.d,
+        s.o,
+        s.c,
+        hp,
+        0.92,
+      );
+      cursor += s.d + (s.g ?? 0.032);
+    }
+  }
+
+  public playEnemyVietnameseRadio(
+    sourceId: string,
+    situation: 'patrol' | 'contact' | 'flank' | 'suppress' | 'wounded' | 'commander',
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+    distance: number,
+    panFallback: number,
+  ): void {
+    if (!this.ctx || !this.sfxDryBus || !this.whiteCrackBuffer || this.muted) return;
+    if (distance > 92) return;
+
+    type Syl = {
+      v: 'a' | 'e' | 'i' | 'o' | 'u' | 'er';
+      t: 'ngang' | 'huyen' | 'sac' | 'hoi' | 'nga' | 'nang';
+      d: number;
+      o: 'none' | 'stop' | 'fric' | 'nasal';
+      c: 'none' | 'stop' | 'nasal';
+      g?: number;
+    };
+
+    // Authentic 6-tone Vietnamese tactical radio callouts
+    const vietnameseBank: Record<typeof situation, Syl[][]> = {
+      patrol: [
+        // "Báo cáo, tuần tra bình thường"
+        [
+          { v: 'a', t: 'sac', d: 0.14, o: 'stop', c: 'none' },
+          { v: 'a', t: 'sac', d: 0.15, o: 'stop', c: 'none', g: 0.06 },
+          { v: 'u', t: 'huyen', d: 0.15, o: 'stop', c: 'nasal' },
+          { v: 'a', t: 'ngang', d: 0.15, o: 'stop', c: 'none', g: 0.04 },
+          { v: 'i', t: 'huyen', d: 0.14, o: 'stop', c: 'nasal' },
+          { v: 'er', t: 'huyen', d: 0.18, o: 'stop', c: 'nasal' },
+        ],
+        // "Chú ý quan sát phía sông"
+        [
+          { v: 'u', t: 'sac', d: 0.13, o: 'stop', c: 'none' },
+          { v: 'i', t: 'sac', d: 0.14, o: 'none', c: 'none', g: 0.04 },
+          { v: 'a', t: 'ngang', d: 0.14, o: 'stop', c: 'nasal' },
+          { v: 'a', t: 'sac', d: 0.15, o: 'fric', c: 'stop', g: 0.04 },
+          { v: 'i', t: 'sac', d: 0.14, o: 'fric', c: 'none' },
+          { v: 'o', t: 'ngang', d: 0.17, o: 'fric', c: 'nasal' },
+        ],
+      ],
+      contact: [
+        // "Phát hiện địch phía trước!"
+        [
+          { v: 'a', t: 'sac', d: 0.13, o: 'fric', c: 'stop' },
+          { v: 'e', t: 'nang', d: 0.13, o: 'fric', c: 'stop', g: 0.03 },
+          { v: 'i', t: 'nang', d: 0.16, o: 'stop', c: 'stop', g: 0.05 },
+          { v: 'i', t: 'sac', d: 0.14, o: 'fric', c: 'none' },
+          { v: 'er', t: 'sac', d: 0.19, o: 'stop', c: 'stop' },
+        ],
+        // "Địch đang tiến gần!"
+        [
+          { v: 'i', t: 'nang', d: 0.14, o: 'stop', c: 'stop' },
+          { v: 'a', t: 'ngang', d: 0.13, o: 'stop', c: 'nasal' },
+          { v: 'e', t: 'sac', d: 0.15, o: 'stop', c: 'nasal' },
+          { v: 'er', t: 'huyen', d: 0.18, o: 'stop', c: 'nasal' },
+        ],
+      ],
+      flank: [
+        // "Bao vây bên sườn!"
+        [
+          { v: 'a', t: 'ngang', d: 0.13, o: 'stop', c: 'none' },
+          { v: 'er', t: 'ngang', d: 0.15, o: 'fric', c: 'none', g: 0.04 },
+          { v: 'e', t: 'ngang', d: 0.13, o: 'stop', c: 'nasal' },
+          { v: 'er', t: 'huyen', d: 0.19, o: 'fric', c: 'nasal' },
+        ],
+      ],
+      suppress: [
+        // "Bắn yểm trợ ngay!"
+        [
+          { v: 'a', t: 'sac', d: 0.14, o: 'stop', c: 'nasal' },
+          { v: 'e', t: 'hoi', d: 0.16, o: 'none', c: 'nasal' },
+          { v: 'er', t: 'nang', d: 0.14, o: 'stop', c: 'none', g: 0.04 },
+          { v: 'a', t: 'ngang', d: 0.17, o: 'nasal', c: 'none' },
+        ],
+      ],
+      wounded: [
+        // "Tôi bị thương, lùi lại!"
+        [
+          { v: 'o', t: 'ngang', d: 0.12, o: 'stop', c: 'none' },
+          { v: 'i', t: 'nang', d: 0.12, o: 'stop', c: 'none' },
+          { v: 'er', t: 'ngang', d: 0.17, o: 'stop', c: 'nasal', g: 0.06 },
+          { v: 'u', t: 'huyen', d: 0.15, o: 'none', c: 'none' },
+          { v: 'a', t: 'nang', d: 0.16, o: 'none', c: 'none' },
+        ],
+      ],
+      commander: [
+        // "Trung đội giữ vững vị trí!"
+        [
+          { v: 'u', t: 'ngang', d: 0.13, o: 'stop', c: 'nasal' },
+          { v: 'o', t: 'nang', d: 0.14, o: 'stop', c: 'none', g: 0.04 },
+          { v: 'u', t: 'nga', d: 0.17, o: 'stop', c: 'none' },
+          { v: 'er', t: 'nga', d: 0.17, o: 'fric', c: 'nasal', g: 0.04 },
+          { v: 'i', t: 'nang', d: 0.13, o: 'fric', c: 'none' },
+          { v: 'i', t: 'sac', d: 0.18, o: 'stop', c: 'none' },
+        ],
+        // "Tất cả tiến công!"
+        [
+          { v: 'er', t: 'sac', d: 0.13, o: 'stop', c: 'stop' },
+          { v: 'a', t: 'hoi', d: 0.15, o: 'stop', c: 'none', g: 0.05 },
+          { v: 'e', t: 'sac', d: 0.15, o: 'stop', c: 'nasal' },
+          { v: 'o', t: 'ngang', d: 0.19, o: 'stop', c: 'nasal' },
+        ],
+      ],
+    };
+
+    const options = vietnameseBank[situation];
+    const phrase = options[Math.floor(Math.random() * options.length)];
+    const speechDur = phrase.reduce((acc, s) => acc + s.d + (s.g ?? 0.025), 0);
+    const totalDur = speechDur + 0.28;
+    const now = this.ctx.currentTime;
+    const basePitch = 132 + (Math.random() - 0.5) * 26;
+
+    // Spatialized in 3D via HRTF PannerNode when Proximity Voice is ON, or stereo pan fallback when OFF
+    let destNode: AudioNode;
+    if (this.proximityVoiceEnabled && typeof this.ctx.createPanner === 'function') {
+      destNode = this.createSpatialPannerNode(
+        sourceId,
+        worldX,
+        worldY,
+        worldZ,
+        5.5,
+        88,
+        1.25,
+        totalDur,
+        this.sfxDryBus,
+      );
+    } else {
+      const distGain = this.ctx.createGain();
+      distGain.gain.value = Math.max(0.14, 1 / (1 + distance * 0.038));
+      distGain.connect(this.sfxDryBus);
+      destNode = this.createPanner(panFallback, distGain);
+    }
+
+    // Military VHF radio filter chain (340 Hz - 2550 Hz bandpass + slight transistor crunch)
+    const radioHp = this.ctx.createBiquadFilter();
+    radioHp.type = 'highpass';
+    radioHp.frequency.value = 360;
+
+    const radioBp = this.ctx.createBiquadFilter();
+    radioBp.type = 'bandpass';
+    radioBp.frequency.value = 1420;
+    radioBp.Q.value = 1.05;
+
+    const radioLp = this.ctx.createBiquadFilter();
+    radioLp.type = 'lowpass';
+    radioLp.frequency.value = 2650;
+
+    const radioGain = this.ctx.createGain();
+    radioGain.gain.value = 0.72;
+
+    radioHp.connect(radioBp);
+    radioBp.connect(radioLp);
+    radioLp.connect(radioGain);
+    radioGain.connect(destNode);
+
+    // 1. Radio PTT squelch-open static hiss
+    const openHiss = this.ctx.createBufferSource();
+    openHiss.buffer = this.whiteCrackBuffer;
+    const openG = this.ctx.createGain();
+    openG.gain.setValueAtTime(0.16, now);
+    openG.gain.exponentialRampToValueAtTime(0.022, now + 0.075);
+    openG.gain.setValueAtTime(0.022, now + speechDur + 0.07);
+    openG.gain.linearRampToValueAtTime(0.14, now + speechDur + 0.11);
+    openG.gain.exponentialRampToValueAtTime(0.001, now + speechDur + 0.21);
+    openHiss.connect(openG);
+    openG.connect(radioHp);
+    openHiss.start(now, Math.random() * 0.4, speechDur + 0.24);
+
+    // 2. Crisp 6-tone Vietnamese syllables
+    let cursor = now + 0.065;
+    for (const s of phrase) {
+      this.scheduleSyllableFormants(
+        cursor,
+        basePitch,
+        s.v,
+        s.t,
+        s.d,
+        s.o,
+        s.c,
+        radioHp,
+        0.95,
+      );
+      cursor += s.d + (s.g ?? 0.026);
+    }
+  }
+
   public dispose(): void {
+    this.activeSpatialVoices = [];
     if (this.ctx) {
       void this.ctx.close();
       this.ctx = null;
@@ -1255,6 +1884,7 @@ export class TacticalAudioEngine {
       this.sfxDryBus = null;
       this.valleyReverb = null;
       this.reverbReturnGain = null;
+      this.voiceGain = null;
       this.windLowFilter = null;
       this.windLowGain = null;
       this.windCanopyFilter = null;

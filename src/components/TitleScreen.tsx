@@ -1,3 +1,4 @@
+import { GitBranch, HardDrive } from 'lucide-react';
 import {
   CAMPAIGN_FACTIONS,
   HEADGEAR_OPTIONS,
@@ -20,6 +21,8 @@ interface TitleScreenProps {
   onOpenRpg: () => void;
   onOpenLoadout: () => void;
   onOpenCampaign: () => void;
+  onOpenDrive: () => void;
+  onOpenUpdates: () => void;
   onStart: () => void;
   muted: boolean;
   onToggleMute: () => void;
@@ -33,6 +36,8 @@ export function TitleScreen({
   onOpenRpg,
   onOpenLoadout,
   onOpenCampaign,
+  onOpenDrive,
+  onOpenUpdates,
   onStart,
   muted,
   onToggleMute,
@@ -61,20 +66,28 @@ export function TitleScreen({
       : activeUniform?.terrainLabel;
 
   return (
-    <div className="fixed inset-0 z-20 flex flex-col justify-between pointer-events-auto bg-gradient-to-r from-[#0e120d]/92 via-[#0e120d]/65 to-[#0e120d]/25 p-5 sm:p-8 md:p-12 overflow-y-auto">
+    <div
+      className="fixed inset-0 z-20 flex flex-col justify-between pointer-events-auto bg-gradient-to-r from-[#0e120d]/92 via-[#0e120d]/65 to-[#0e120d]/25 p-4 sm:p-8 md:p-12 overflow-y-auto touch-scroll"
+      style={{
+        paddingTop: 'max(1rem, env(safe-area-inset-top))',
+        paddingBottom: 'max(1rem, env(safe-area-inset-bottom))',
+        paddingLeft: 'max(1rem, env(safe-area-inset-left))',
+        paddingRight: 'max(1rem, env(safe-area-inset-right))',
+      }}
+    >
       {/* Top minimal utility row */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3 text-xs tracking-widest text-[#b8b39e] uppercase font-mono-tabular">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 text-[11px] sm:text-xs tracking-widest text-[#b8b39e] uppercase font-mono-tabular">
           <span>Mekong Valley Sector</span>
           <span aria-hidden="true">·</span>
-          <span>1968 Single-Player RPG Simulation</span>
+          <span>1968 Tactical RPG</span>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
           {prog && (
             <button
               type="button"
               onClick={onOpenRpg}
-              className={`min-h-[44px] px-4 py-2 text-xs font-mono-tabular uppercase rounded border transition-colors cursor-pointer whitespace-nowrap ${
+              className={`min-h-[44px] px-3.5 sm:px-4 py-2 text-xs font-mono-tabular uppercase rounded border transition-colors cursor-pointer whitespace-nowrap ${
                 unspentTotal > 0
                   ? 'bg-[#c89b3c] hover:bg-[#d8ab4c] border-[#f4d78b] text-[#11150f] font-bold'
                   : 'bg-[#1a2017]/90 hover:bg-[#252d21] border-[#3d4736] text-[#ece9df]'
@@ -85,8 +98,24 @@ export function TitleScreen({
           )}
           <button
             type="button"
+            onClick={onOpenDrive}
+            className="min-h-[44px] px-3.5 py-2 text-xs font-mono-tabular uppercase bg-[#1a2017]/90 hover:bg-[#252d21] text-[#ece9df] border border-[#3d4736] hover:border-[#c89b3c]/70 rounded transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 shrink-0"
+          >
+            <HardDrive className="w-3.5 h-3.5 text-[#c89b3c]" />
+            <span>Drive Sync</span>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenUpdates}
+            className="min-h-[44px] px-3.5 py-2 text-xs font-mono-tabular uppercase bg-[#1a2017]/90 hover:bg-[#252d21] text-[#ece9df] border border-[#3d4736] hover:border-[#c89b3c]/70 rounded transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 shrink-0"
+          >
+            <GitBranch className="w-3.5 h-3.5 text-[#9cc47d]" />
+            <span>Updates</span>
+          </button>
+          <button
+            type="button"
             onClick={onToggleMute}
-            className="min-h-[44px] px-4 py-2 text-xs font-medium tracking-wider uppercase bg-[#1a2017]/90 hover:bg-[#252d21] text-[#ece9df] border border-[#3d4736] rounded transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            className="min-h-[44px] px-3.5 sm:px-4 py-2 text-xs font-medium tracking-wider uppercase bg-[#1a2017]/90 hover:bg-[#252d21] text-[#ece9df] border border-[#3d4736] rounded transition-colors cursor-pointer whitespace-nowrap shrink-0"
           >
             {muted ? 'Audio Off' : 'Audio On'}
           </button>

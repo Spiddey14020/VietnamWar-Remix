@@ -2,13 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArmoryModal } from './components/ArmoryModal';
 import { CampaignModal } from './components/CampaignModal';
 import { GameHUD } from './components/GameHUD';
+import { GitHubUpdateModal } from './components/GitHubUpdateModal';
+import { GoogleDriveModal } from './components/GoogleDriveModal';
 import { PauseOutcomeModal } from './components/PauseOutcomeModal';
 import { RpgDossierModal, type RpgTab } from './components/RpgDossierModal';
 import { TacticalMapModal } from './components/TacticalMapModal';
 import { TitleScreen } from './components/TitleScreen';
 import { TouchControls } from './components/TouchControls';
 import { VietnamGameEngine } from './game/engine';
-import type { ControlMode, GamePhase, HudSnapshot, TouchInputState, WeaponId } from './game/types';
+import type {
+  ControlMode,
+  GamePhase,
+  GraphicsQuality,
+  HudSnapshot,
+  TouchInputState,
+  WeaponId,
+} from './game/types';
 
 export default function App() {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -20,20 +29,41 @@ export default function App() {
   const [armoryOpen, setArmoryOpen] = useState(false);
   const [rpgOpen, setRpgOpen] = useState(false);
   const [campaignOpen, setCampaignOpen] = useState(false);
+  const [driveOpen, setDriveOpen] = useState(false);
+  const [updatesOpen, setUpdatesOpen] = useState(false);
   const [rpgInitialTab, setRpgInitialTab] = useState<RpgTab>('build');
   const [controlMode, setControlMode] = useState<ControlMode>('auto');
+  const [graphicsQuality, setGraphicsQuality] = useState<GraphicsQuality>(() => {
+    try {
+      const saved = localStorage.getItem('vietnam_war_gfx_quality_v1');
+      if (saved === 'high' || saved === 'battery' || saved === 'auto') return saved;
+    } catch {
+      // ignore storage failure
+    }
+    return 'auto';
+  });
   const [sensitivity, setSensitivity] = useState(1.0);
   const [isTouchDevice, setIsTouchDevice] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     const checkTouch = () => {
       const coarse = window.matchMedia('(pointer: coarse)').matches;
+      const fine = window.matchMedia('(pointer: fine)').matches;
+      const isAndroid = /android/i.test(navigator.userAgent);
       const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-      setIsTouchDevice(coarse || (hasTouch && window.innerWidth < 1024));
+      setIsTouchDevice(coarse || isAndroid || (hasTouch && (!fine || window.innerWidth < 1024)));
     };
     checkTouch();
     window.addEventListener('resize', checkTouch);
     return () => window.removeEventListener('resize', checkTouch);
+  }, []);
+
+  useEffect(() => {
+    const syncFs = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    syncFs();
+    document.addEventListener('fullscreenchange', syncFs);
+    return () => document.removeEventListener('fullscreenchange', syncFs);
   }, []);
 
   const showTouchControls = useMemo(() => {
@@ -41,6 +71,32 @@ export default function App() {
     if (controlMode === 'desktop') return false;
     return isTouchDevice;
   }, [controlMode, isTouchDevice]);
+
+  useEffect(() => {
+    if (!showTouchControls || phase !== 'playing') return;
+    let sentinel: { release: () => Promise<void> } | null = null;
+    let cancelled = false;
+    const nav = navigator as unknown as {
+      wakeLock?: { request: (type: 'screen') => Promise<{ release: () => Promise<void> }> };
+    };
+    nav.wakeLock
+      ?.request('screen')
+      .then((s) => {
+        if (cancelled) {
+          void s.release();
+        } else {
+          sentinel = s;
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      if (sentinel) {
+        void sentinel.release().catch(() => {});
+      }
+    };
+  }, [showTouchControls, phase]);
 
   useEffect(() => {
     const el = mountRef.current;
@@ -78,6 +134,7 @@ export default function App() {
         setRpgOpen((prev) => !prev);
       }
     });
+    engine.setGraphicsQuality(graphicsQuality);
     engineRef.current = engine;
 
     return () => {
@@ -87,13 +144,35 @@ export default function App() {
     };
   }, []);
 
+  const handleToggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen?.().catch(() => {});
+    } else {
+      void document.documentElement.requestFullscreen?.().catch(() => {});
+    }
+  }, []);
+
+  const handleGraphicsQualityChange = useCallback((quality: GraphicsQuality) => {
+    setGraphicsQuality(quality);
+    try {
+      localStorage.setItem('vietnam_war_gfx_quality_v1', quality);
+    } catch {
+      // ignore storage failure
+    }
+    engineRef.current?.setGraphicsQuality(quality);
+  }, []);
+
   const handleStart = useCallback(() => {
     setMapOpen(false);
     setArmoryOpen(false);
     setRpgOpen(false);
     setCampaignOpen(false);
     engineRef.current?.startGame();
-    if (!showTouchControls) {
+    if (showTouchControls) {
+      if (!document.fullscreenElement) {
+        void document.documentElement.requestFullscreen?.().catch(() => {});
+      }
+    } else {
       engineRef.current?.requestPointerLock();
     }
   }, [showTouchControls]);
@@ -111,13 +190,24 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (phase === 'title' && !rpgOpen && !campaignOpen && (e.code === 'Enter' || e.code === 'Space')) {
+      if (
+        phase === 'title' &&
+        !rpgOpen &&
+        !campaignOpen &&
+        !driveOpen &&
+        !updatesOpen &&
+        (e.code === 'Enter' || e.code === 'Space')
+      ) {
         e.preventDefault();
         handleStart();
         return;
       }
       if (e.code === 'Escape') {
-        if (campaignOpen) {
+        if (updatesOpen) {
+          setUpdatesOpen(false);
+        } else if (driveOpen) {
+          setDriveOpen(false);
+        } else if (campaignOpen) {
           setCampaignOpen(false);
         } else if (rpgOpen) {
           setRpgOpen(false);
@@ -146,7 +236,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [phase, mapOpen, armoryOpen, rpgOpen, campaignOpen, handleStart]);
+  }, [phase, mapOpen, armoryOpen, rpgOpen, campaignOpen, driveOpen, updatesOpen, handleStart]);
 
   const handleSensitivityChange = useCallback((val: number) => {
     setSensitivity(val);
@@ -207,7 +297,7 @@ export default function App() {
         }}
       />
 
-      {phase === 'title' && !rpgOpen && !campaignOpen && (
+      {phase === 'title' && !rpgOpen && !campaignOpen && !driveOpen && !updatesOpen && (
         <TitleScreen
           hud={hud}
           controlMode={controlMode}
@@ -222,6 +312,8 @@ export default function App() {
             setRpgOpen(true);
           }}
           onOpenCampaign={() => setCampaignOpen(true)}
+          onOpenDrive={() => setDriveOpen(true)}
+          onOpenUpdates={() => setUpdatesOpen(true)}
           onStart={handleStart}
           muted={hud?.muted ?? false}
           onToggleMute={() => engineRef.current?.toggleMute()}
@@ -233,6 +325,8 @@ export default function App() {
           <GameHUD
             hud={hud}
             showTouchControls={showTouchControls}
+            isFullscreen={isFullscreen}
+            onToggleFullscreen={handleToggleFullscreen}
             onToggleMap={toggleMap}
             onToggleArmory={toggleArmory}
             onToggleRpg={toggleRpg}
@@ -242,6 +336,7 @@ export default function App() {
             onToggleMute={() => engineRef.current?.toggleMute()}
             onPause={handlePause}
             onSelectWeapon={(id: WeaponId) => engineRef.current?.selectWeapon(id)}
+            onCycleWeapon={() => engineRef.current?.cycleWeapon()}
             onContextAction={() => engineRef.current?.triggerContextAction()}
             onCallCounterBattery={() => engineRef.current?.callCounterBatteryFire()}
           />
@@ -349,19 +444,26 @@ export default function App() {
         hud &&
         !armoryOpen &&
         !rpgOpen &&
-        !campaignOpen && (
+        !campaignOpen &&
+        !driveOpen &&
+        !updatesOpen && (
           <PauseOutcomeModal
             hud={hud}
             controlMode={controlMode}
+            graphicsQuality={graphicsQuality}
             sensitivity={sensitivity}
+            isFullscreen={isFullscreen}
             onChangeControlMode={setControlMode}
+            onChangeGraphicsQuality={handleGraphicsQualityChange}
             onChangeSensitivity={handleSensitivityChange}
+            onToggleFullscreen={handleToggleFullscreen}
             onChangeAmbienceVolume={(v) => engineRef.current?.setAmbienceVolume(v)}
             onChangeSfxVolume={(v) => engineRef.current?.setSfxVolume(v)}
             onSetTimeOfDay={(h) => engineRef.current?.setTimeOfDayHour(h)}
             onSetWeather={(w) => engineRef.current?.setWeatherOverride(w)}
             onSetTimeSpeed={(m) => engineRef.current?.setTimeSpeedMult(m)}
             onToggleMute={() => engineRef.current?.toggleMute()}
+            onToggleProximityVoice={() => engineRef.current?.toggleProximityVoice()}
             onOpenArmory={() => {
               engineRef.current?.resumeGame();
               setArmoryOpen(true);
@@ -371,6 +473,8 @@ export default function App() {
               setRpgOpen(true);
             }}
             onOpenCampaign={() => setCampaignOpen(true)}
+            onOpenDrive={() => setDriveOpen(true)}
+            onOpenUpdates={() => setUpdatesOpen(true)}
             onNextOperation={
               hud.campaign.active &&
               !hud.campaign.campaignCompleted &&
@@ -393,6 +497,16 @@ export default function App() {
             onReturnTitle={() => engineRef.current?.resetMissionState('title')}
           />
         )}
+
+      {driveOpen && (
+        <GoogleDriveModal
+          hud={hud}
+          onSaveRestored={() => engineRef.current?.reloadProfileFromStorage()}
+          onClose={() => setDriveOpen(false)}
+        />
+      )}
+
+      {updatesOpen && <GitHubUpdateModal onClose={() => setUpdatesOpen(false)} />}
     </div>
   );
 }

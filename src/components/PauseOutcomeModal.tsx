@@ -1,7 +1,9 @@
+import { GitBranch, HardDrive } from 'lucide-react';
 import {
   CAMPAIGN_FACTIONS,
   SOLDIER_CLASSES,
   type ControlMode,
+  type GraphicsQuality,
   type HudSnapshot,
   type WeatherKind,
 } from '../game/types';
@@ -10,18 +12,25 @@ import { PWAInstallButton } from './PWAInstallButton';
 interface PauseOutcomeModalProps {
   hud: HudSnapshot;
   controlMode: ControlMode;
+  graphicsQuality: GraphicsQuality;
   sensitivity: number;
+  isFullscreen: boolean;
   onChangeControlMode: (mode: ControlMode) => void;
+  onChangeGraphicsQuality: (quality: GraphicsQuality) => void;
   onChangeSensitivity: (val: number) => void;
+  onToggleFullscreen: () => void;
   onChangeAmbienceVolume: (val: number) => void;
   onChangeSfxVolume: (val: number) => void;
   onSetTimeOfDay: (hour: number) => void;
   onSetWeather: (mode: WeatherKind | 'AUTO') => void;
   onSetTimeSpeed: (mult: number) => void;
   onToggleMute: () => void;
+  onToggleProximityVoice: () => void;
   onOpenArmory: () => void;
   onOpenRpg: () => void;
   onOpenCampaign: () => void;
+  onOpenDrive: () => void;
+  onOpenUpdates: () => void;
   onNextOperation?: () => void;
   onResume: () => void;
   onRestart: () => void;
@@ -37,18 +46,25 @@ function formatTime(totalSec: number): string {
 export function PauseOutcomeModal({
   hud,
   controlMode,
+  graphicsQuality,
   sensitivity,
+  isFullscreen,
   onChangeControlMode,
+  onChangeGraphicsQuality,
   onChangeSensitivity,
+  onToggleFullscreen,
   onChangeAmbienceVolume,
   onChangeSfxVolume,
   onSetTimeOfDay,
   onSetWeather,
   onSetTimeSpeed,
   onToggleMute,
+  onToggleProximityVoice,
   onOpenArmory,
   onOpenRpg,
   onOpenCampaign,
+  onOpenDrive,
+  onOpenUpdates,
   onNextOperation,
   onResume,
   onRestart,
@@ -71,8 +87,8 @@ export function PauseOutcomeModal({
     : null;
 
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-[#0c0f0b]/88 p-4 pointer-events-auto overflow-y-auto">
-      <div className="w-full max-w-md bg-[#161c14] border border-[#4a5640] rounded-lg p-5 sm:p-6 shadow-2xl my-auto">
+    <div className="fixed inset-0 z-30 flex items-start sm:items-center justify-center bg-[#0c0f0b]/88 p-3 sm:p-4 pointer-events-auto overflow-y-auto touch-scroll">
+      <div className="w-full max-w-md bg-[#161c14] border border-[#4a5640] rounded-lg p-4 sm:p-6 shadow-2xl my-auto">
         <div className="text-xs font-mono-tabular uppercase tracking-widest text-[#c89b3c] mb-1">
           {isVictory
             ? 'Extraction Confirmed'
@@ -234,7 +250,16 @@ export function PauseOutcomeModal({
             </div>
 
             <div>
-              <div className="text-xs text-[#9ea38f] mb-1.5">Control Profile</div>
+              <div className="flex items-center justify-between text-xs text-[#9ea38f] mb-1.5">
+                <span>Control Profile</span>
+                <button
+                  type="button"
+                  onClick={onToggleFullscreen}
+                  className="px-2.5 py-1 text-[11px] font-mono-tabular bg-[#1a2017] hover:bg-[#2a3325] border border-[#3a4433] rounded text-[#d9d5c5] cursor-pointer"
+                >
+                  {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+                </button>
+              </div>
               <div className="grid grid-cols-3 gap-1 p-1 bg-[#11150f] border border-[#2f382a] rounded">
                 {(
                   [
@@ -247,8 +272,34 @@ export function PauseOutcomeModal({
                     key={opt.id}
                     type="button"
                     onClick={() => onChangeControlMode(opt.id)}
-                    className={`min-h-[38px] text-xs font-medium rounded transition-colors cursor-pointer ${
+                    className={`min-h-[40px] text-xs font-medium rounded transition-colors cursor-pointer ${
                       controlMode === opt.id
+                        ? 'bg-[#c89b3c] text-[#11150f]'
+                        : 'text-[#c9c5b4] hover:text-white'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs text-[#9ea38f] mb-1.5">Android / GPU Performance</div>
+              <div className="grid grid-cols-3 gap-1 p-1 bg-[#11150f] border border-[#2f382a] rounded">
+                {(
+                  [
+                    { id: 'auto', label: 'Auto Balanced' },
+                    { id: 'high', label: 'Tablet High' },
+                    { id: 'battery', label: 'Battery Saver' },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => onChangeGraphicsQuality(opt.id)}
+                    className={`min-h-[40px] text-[11px] font-medium rounded transition-colors cursor-pointer ${
+                      graphicsQuality === opt.id
                         ? 'bg-[#c89b3c] text-[#11150f]'
                         : 'text-[#c9c5b4] hover:text-white'
                     }`}
@@ -287,6 +338,27 @@ export function PauseOutcomeModal({
                   className="px-2.5 py-1 text-[11px] font-mono-tabular bg-[#1e251b] hover:bg-[#2a3325] border border-[#3e4836] rounded text-[#ece9df] cursor-pointer"
                 >
                   {hud.muted ? 'Master Muted' : 'Master Active'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 p-2 bg-[#161c14] border border-[#2d3628] rounded">
+                <div className="min-w-0">
+                  <div className="text-xs text-[#ece9df]">Proximity Voice</div>
+                  <div className="text-[11px] text-[#8e9381]">
+                    3D spatialized local squad chatter
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={onToggleProximityVoice}
+                  aria-pressed={hud.proximityVoiceEnabled}
+                  className={`min-h-[36px] px-3 py-1 text-[11px] font-mono-tabular uppercase tracking-wide rounded border cursor-pointer shrink-0 ${
+                    hud.proximityVoiceEnabled
+                      ? 'bg-[#c89b3c] border-[#f0cf81] text-[#11150f] font-semibold'
+                      : 'bg-[#1a2017] hover:bg-[#2a3325] border-[#3e4836] text-[#c9c5b4]'
+                  }`}
+                >
+                  {hud.proximityVoiceEnabled ? 'Enabled' : 'Disabled'}
                 </button>
               </div>
 
@@ -372,6 +444,24 @@ export function PauseOutcomeModal({
             className="min-h-[44px] w-full bg-[#1e261b] hover:bg-[#2a3425] text-[#ece9df] border border-[#4a5640] font-display font-semibold tracking-wider uppercase text-sm rounded transition-colors cursor-pointer"
           >
             Campaign Operations &amp; Factions
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenDrive}
+            className="min-h-[44px] w-full bg-[#1e261b] hover:bg-[#2a3425] text-[#ece9df] border border-[#4a5640] font-display font-semibold tracking-wider uppercase text-sm rounded transition-colors cursor-pointer flex items-center justify-center gap-2"
+          >
+            <HardDrive className="w-4 h-4 text-[#c89b3c]" />
+            <span>Google Drive Cloud Saves</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenUpdates}
+            className="min-h-[44px] w-full bg-[#1e261b] hover:bg-[#2a3425] text-[#ece9df] border border-[#4a5640] font-display font-semibold tracking-wider uppercase text-sm rounded transition-colors cursor-pointer flex items-center justify-center gap-2"
+          >
+            <GitBranch className="w-4 h-4 text-[#9cc47d]" />
+            <span>Check for Updates (GitHub)</span>
           </button>
 
           <button
