@@ -623,6 +623,195 @@ async function createServer() {
     }
   });
 
+  const getDefaultGitHubRepo = async (): Promise<string | null> => {
+    if (process.env.GITHUB_REPOSITORY && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(process.env.GITHUB_REPOSITORY)) {
+      return process.env.GITHUB_REPOSITORY;
+    }
+    try {
+      const electronPkgRaw = await fs.readFile(path.join(ROOT_DIR, 'electron', 'package.json'), 'utf8');
+      const electronPkg = JSON.parse(electronPkgRaw) as {
+        build?: { publish?: Array<{ provider?: string; owner?: string; repo?: string }> };
+      };
+      const pub = electronPkg.build?.publish?.[0];
+      if (
+        pub?.owner &&
+        pub?.repo &&
+        /^[A-Za-z0-9_.-]+$/.test(pub.owner) &&
+        /^[A-Za-z0-9_.-]+$/.test(pub.repo)
+      ) {
+        return `${pub.owner}/${pub.repo}`;
+      }
+    } catch {
+      // Optional electron publish config
+    }
+    return null;
+  };
+
+  const parseGitHubSlug = (raw: string): { owner: string; repo: string } | null => {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    let candidate = trimmed.replace(/^git@github\.com:/i, 'https://github.com/');
+    if (!/^https?:\/\//i.test(candidate) && candidate.includes('github.')) {
+      candidate = `https://${candidate}`;
+    }
+    if (/^https?:\/\//i.test(candidate)) {
+      try {
+        const u = new URL(candidate);
+        const host = u.hostname.toLowerCase();
+        const parts = u.pathname.split('/').map((s) => s.trim()).filter(Boolean);
+        if (host.endsWith('.github.io')) {
+          const owner = host.slice(0, -'.github.io'.length);
+          const repo = (parts[0] || `${owner}.github.io`).replace(/\.git$/i, '');
+          if (/^[A-Za-z0-9_.-]+$/.test(owner) && /^[A-Za-z0-9_.-]+$/.test(repo)) {
+            return { owner, repo };
+          }
+        }
+        if ((host === 'github.com' || host === 'www.github.com') && parts.length >= 2) {
+          const owner = parts[0];
+          const repo = parts[1].replace(/\.git$/i, '');
+          if (/^[A-Za-z0-9_.-]+$/.test(owner) && /^[A-Za-z0-9_.-]+$/.test(repo)) {
+            return { owner, repo };
+          }
+        }
+      } catch {
+        return null;
+      }
+    }
+    const parts = trimmed.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '').split('/');
+    if (parts.length === 2 && /^[A-Za-z0-9_.-]+$/.test(parts[0]) && /^[A-Za-z0-9_.-]+$/.test(parts[1])) {
+      return { owner: parts[0], repo: parts[1] };
+    }
+    return null;
+  };
+
+  app.get('/api/github/default-repo', async (_req, res) => {
+    const repo = await getDefaultGitHubRepo();
+    res.json({ repo });
+  });
+
+  app.get('/api/github/check', async (req, res) => {
+    try {
+      const rawParam = typeof req.query.repo === 'string' ? req.query.repo : '';
+      const defaultRepo = rawParam ? null : await getDefaultGitHubRepo();
+      const parsed = parseGitHubSlug(rawParam || defaultRepo || '');
+      if (!parsed) {
+        res.status(400).json({ error: 'Invalid GitHub repository format. Use owner/repo or a GitHub URL.' });
+        return;
+      }
+
+      const ghHeaders: Record<string, string> = {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'Vietnam-War-1968-Update-Checker',
+      };
+      if (process.env.GITHUB_TOKEN) {
+        ghHeaders.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+      }
+
+      const apiBase = `https://api.github.com/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}`;
+      const repoRes = await fetch(apiBase, { headers: ghHeaders });
+      if (!repoRes.ok) {
+        const errData = (await repoRes.json().catch(() => ({}))) as { message?: string };
+        res.status(repoRes.status).json({
+          error: errData.message || `GitHub API returned ${repoRes.status} for ${parsed.owner}/${parsed.repo}`,
+        });
+        return;
+      }
+
+      const repoJson = (await repoRes.json()) as {
+        full_name: string;
+        html_url: string;
+        description?: string | null;
+        default_branch?: string;
+        has_pages?: boolean;
+      };
+
+      const [releaseRes, tagsRes, commitsRes] = await Promise.all([
+        fetch(`${apiBase}/releases/latest`, { headers: ghHeaders }).catch(() => null),
+        fetch(`${apiBase}/tags?per_page=3`, { headers: ghHeaders }).catch(() => null),
+        fetch(`${apiBase}/commits?per_page=3`, { headers: ghHeaders }).catch(() => null),
+      ]);
+
+      let latestRelease = null;
+      if (releaseRes && releaseRes.ok) {
+        const rel = (await releaseRes.json()) as {
+          tag_name?: string;
+          name?: string;
+          published_at?: string;
+          html_url?: string;
+          body?: string;
+          prerelease?: boolean;
+          assets?: Array<{ name: string; size: number; browser_download_url: string }>;
+        };
+        latestRelease = {
+          tagName: rel.tag_name || '',
+          name: rel.name || rel.tag_name || 'Latest Release',
+          publishedAt: rel.published_at || '',
+          htmlUrl: rel.html_url || `${repoJson.html_url}/releases`,
+          body: rel.body || '',
+          prerelease: Boolean(rel.prerelease),
+          assets: (rel.assets || []).map((a) => ({
+            name: a.name,
+            size: a.size,
+            downloadUrl: a.browser_download_url,
+          })),
+        };
+      }
+
+      let latestTag = null;
+      if (tagsRes && tagsRes.ok) {
+        const tags = (await tagsRes.json()) as Array<{ name: string; commit?: { sha?: string } }>;
+        if (Array.isArray(tags) && tags.length > 0) {
+          latestTag = {
+            name: tags[0].name,
+            commitSha: tags[0].commit?.sha || '',
+          };
+        }
+      }
+
+      let recentCommits: Array<{
+        sha: string;
+        shortSha: string;
+        message: string;
+        author: string;
+        date: string;
+        htmlUrl: string;
+      }> = [];
+      if (commitsRes && commitsRes.ok) {
+        const commits = (await commitsRes.json()) as Array<{
+          sha: string;
+          html_url: string;
+          commit?: { message?: string; author?: { name?: string; date?: string } };
+        }>;
+        if (Array.isArray(commits)) {
+          recentCommits = commits.map((c) => ({
+            sha: c.sha,
+            shortSha: c.sha.slice(0, 7),
+            message: (c.commit?.message || '').split('\n')[0],
+            author: c.commit?.author?.name || 'Developer',
+            date: c.commit?.author?.date || '',
+            htmlUrl: c.html_url,
+          }));
+        }
+      }
+
+      res.json({
+        repo: repoJson.full_name,
+        htmlUrl: repoJson.html_url,
+        description: repoJson.description || '',
+        defaultBranch: repoJson.default_branch || 'main',
+        hasPages: Boolean(repoJson.has_pages),
+        pagesUrl: repoJson.has_pages ? `https://${parsed.owner}.github.io/${parsed.repo}/` : null,
+        latestRelease,
+        latestTag,
+        recentCommits,
+        checkedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Failed to check GitHub repository:', err);
+      res.status(500).json({ error: 'Failed to reach GitHub API.' });
+    }
+  });
+
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(DIST_DIR));
     app.get('*', (_req, res) => {

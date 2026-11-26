@@ -18,6 +18,7 @@ import type {
   TouchInputState,
   WeaponId,
 } from './game/types';
+import { useInGameCapture } from './hooks/useInGameCapture';
 
 export default function App() {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -284,6 +285,28 @@ export default function App() {
     });
   }, []);
 
+  const captureEnabled =
+    phase === 'playing' &&
+    !mapOpen &&
+    !armoryOpen &&
+    !rpgOpen &&
+    !campaignOpen &&
+    !driveOpen &&
+    !updatesOpen;
+
+  const {
+    isRecording,
+    recordingSec,
+    flashActive,
+    toast: captureToast,
+    beginCapturePress,
+    endCapturePress,
+  } = useInGameCapture({
+    enabled: captureEnabled,
+    getScreenshotDataUrl: () => engineRef.current?.captureScreenshotDataUrl() ?? null,
+    getCaptureStream: () => engineRef.current?.getCaptureStream() ?? null,
+  });
+
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#0e120d]">
       {/* Isolated WebGL canvas mount */}
@@ -326,6 +349,10 @@ export default function App() {
             hud={hud}
             showTouchControls={showTouchControls}
             isFullscreen={isFullscreen}
+            isRecording={isRecording}
+            recordingSec={recordingSec}
+            onBeginCapturePress={beginCapturePress}
+            onEndCapturePress={endCapturePress}
             onToggleFullscreen={handleToggleFullscreen}
             onToggleMap={toggleMap}
             onToggleArmory={toggleArmory}
@@ -507,6 +534,28 @@ export default function App() {
       )}
 
       {updatesOpen && <GitHubUpdateModal onClose={() => setUpdatesOpen(false)} />}
+
+      {flashActive && (
+        <div className="fixed inset-0 z-50 bg-white/70 pointer-events-none transition-opacity duration-150" />
+      )}
+
+      {captureToast && (
+        <div
+          key={captureToast.id}
+          className="fixed bottom-4 right-4 z-50 pointer-events-none flex items-center gap-2.5 bg-[#121710]/95 border border-[#c89b3c] px-3 py-2 rounded shadow-xl max-w-[90vw]"
+        >
+          {captureToast.previewUrl && (
+            <img
+              src={captureToast.previewUrl}
+              alt="Screenshot preview"
+              className="w-14 h-9 object-cover rounded border border-[#3a4433] shrink-0"
+            />
+          )}
+          <div className="text-xs font-mono-tabular text-[#f4e9c7]">
+            {captureToast.message}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

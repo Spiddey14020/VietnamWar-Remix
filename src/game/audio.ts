@@ -10,6 +10,7 @@ export class TacticalAudioEngine {
   private valleyReverb: ConvolverNode | null = null;
   private reverbReturnGain: GainNode | null = null;
   private voiceGain: GainNode | null = null;
+  private captureDest: MediaStreamAudioDestinationNode | null = null;
 
   private pinkBedBuffer: AudioBuffer | null = null;
   private whiteCrackBuffer: AudioBuffer | null = null;
@@ -94,6 +95,52 @@ export class TacticalAudioEngine {
     }
   }
 
+  public getCaptureStream(): MediaStream | null {
+    this.unlock();
+    if (!this.ctx || !this.masterGain) return null;
+    if (typeof this.ctx.createMediaStreamDestination !== 'function') return null;
+    if (!this.captureDest) {
+      this.captureDest = this.ctx.createMediaStreamDestination();
+      this.masterGain.connect(this.captureDest);
+    }
+    return this.captureDest.stream;
+  }
+
+  public playCameraShutter(): void {
+    this.unlock();
+    if (!this.ctx || !this.sfxGain || this.muted) return;
+    const t = this.ctx.currentTime;
+
+    const clickOsc = this.ctx.createOscillator();
+    const clickGain = this.ctx.createGain();
+    clickOsc.type = 'triangle';
+    clickOsc.frequency.setValueAtTime(1900, t);
+    clickOsc.frequency.exponentialRampToValueAtTime(340, t + 0.032);
+    clickGain.gain.setValueAtTime(0.22, t);
+    clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.038);
+    clickOsc.connect(clickGain);
+    clickGain.connect(this.sfxGain);
+    clickOsc.start(t);
+    clickOsc.stop(t + 0.04);
+
+    if (this.whiteCrackBuffer) {
+      const burst = this.ctx.createBufferSource();
+      burst.buffer = this.whiteCrackBuffer;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 3200;
+      filter.Q.value = 1.4;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.18, t + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.065);
+      burst.connect(filter);
+      filter.connect(g);
+      g.connect(this.sfxGain);
+      burst.start(t + 0.015);
+      burst.stop(t + 0.07);
+    }
+  }
+
   public unlock(): void {
     if (!this.ctx) {
       const AudioCtx =
@@ -113,6 +160,9 @@ export class TacticalAudioEngine {
       this.masterGain.gain.value = this.muted ? 0 : 0.86;
       this.masterCompressor.connect(this.masterGain);
       this.masterGain.connect(this.ctx.destination);
+      if (this.captureDest) {
+        this.masterGain.connect(this.captureDest);
+      }
 
       this.ambienceGain = this.ctx.createGain();
       this.ambienceGain.gain.value = this.ambienceVolume;

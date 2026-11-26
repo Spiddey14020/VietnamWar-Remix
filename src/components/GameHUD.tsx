@@ -12,6 +12,10 @@ interface GameHUDProps {
   hud: HudSnapshot;
   showTouchControls: boolean;
   isFullscreen: boolean;
+  isRecording: boolean;
+  recordingSec: number;
+  onBeginCapturePress: () => void;
+  onEndCapturePress: () => void;
   onToggleFullscreen: () => void;
   onToggleMap: () => void;
   onToggleArmory: () => void;
@@ -48,6 +52,10 @@ export function GameHUD({
   hud,
   showTouchControls,
   isFullscreen,
+  isRecording,
+  recordingSec,
+  onBeginCapturePress,
+  onEndCapturePress,
   onToggleFullscreen,
   onToggleMap,
   onToggleArmory,
@@ -407,9 +415,43 @@ export function GameHUD({
           </div>
         </div>
 
-        {/* Top-Right: Compact Mobile Compass/Clock + Fullscreen + Mute & Pause */}
+        {/* Top-Right: Compact Mobile Compass/Clock + Capture + Fullscreen + Mute & Pause */}
         <div className="flex flex-col items-end gap-1.5 pointer-events-auto shrink-0">
           <div className="flex items-center gap-1.5 sm:gap-2">
+            <button
+              type="button"
+              title="Tap: Screenshot (F10) · Hold: Record Footage (Hold F10)"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                onBeginCapturePress();
+              }}
+              onPointerUp={(e) => {
+                e.stopPropagation();
+                onEndCapturePress();
+              }}
+              onPointerCancel={() => onEndCapturePress()}
+              onPointerLeave={() => {
+                if (!isRecording) return;
+                onEndCapturePress();
+              }}
+              className={`min-h-[40px] sm:min-h-[44px] px-2.5 py-1.5 border rounded text-[11px] font-mono-tabular cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                isRecording
+                  ? 'bg-[#6b1a14]/95 border-[#ff7362] text-[#fff2ef] font-bold'
+                  : 'bg-[#121610]/85 hover:bg-[#1e251b] border-[#3a4433] text-[#d9d5c5]'
+              }`}
+            >
+              {isRecording ? (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-[#ff5a47] animate-pulse" />
+                  <span>
+                    REC {String(Math.floor(recordingSec / 60)).padStart(2, '0')}:
+                    {String(recordingSec % 60).padStart(2, '0')}
+                  </span>
+                </>
+              ) : (
+                <span>{showTouchControls ? 'Cam' : 'F10 Cam'}</span>
+              )}
+            </button>
             {showTouchControls && (
               <button
                 type="button"

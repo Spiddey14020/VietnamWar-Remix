@@ -311,8 +311,8 @@ export function TitleScreen({
       {/* Single flat control-hint line */}
       <div className="text-xs text-[#a5a897] font-mono-tabular">
         {controlMode === 'touch'
-          ? 'Left Thumb Move · Right Drag Aim · Fire / ADS / Crouch / Frag Touch Buttons'
-          : 'WASD Move · Mouse Aim & Fire · R Reload · C Crouch · G Frag · H Bandage · K RPG & Quests · M Map'}
+          ? 'Left Thumb Move · Right Drag Aim · Fire / ADS / Crouch / Frag Touch Buttons · Cam Tap/Hold Capture'
+          : 'WASD Move · Mouse Aim & Fire · R Reload · C Crouch · G Frag · H Bandage · K RPG · M Map · F10 Tap Screenshot / Hold Record'}
       </div>
     </div>
   );

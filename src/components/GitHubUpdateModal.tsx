@@ -3,519 +3,683 @@ import {
   Download,
   ExternalLink,
   GitBranch,
+  GitCommitHorizontal,
+  Globe,
   RefreshCw,
-  Server,
+  RotateCcw,
+  Tag,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useDesktopUpdater } from '../hooks/useDesktopUpdater';
 
-interface GitHubReleaseAsset {
+const STORAGE_REPO_KEY = 'vietnam_war_github_repo_v1';
+const STORAGE_LAST_COMMIT_KEY = 'vietnam_war_github_last_sha_v1';
+const DEFAULT_APP_VERSION = '1.0.0';
+
+interface GitHubAssetInfo {
   name: string;
   size: number;
   downloadUrl: string;
-  contentType: string;
 }
 
-interface GitHubUpdateCheckResponse {
-  currentVersion: string;
-  installedCommitSha: string | null;
-  installedAt: string | null;
+interface GitHubReleaseInfo {
+  tagName: string;
+  name: string;
+  publishedAt: string;
+  htmlUrl: string;
+  body: string;
+  prerelease: boolean;
+  assets: GitHubAssetInfo[];
+}
+
+interface GitHubCommitInfo {
+  sha: string;
+  shortSha: string;
+  message: string;
+  author: string;
+  date: string;
+  htmlUrl: string;
+}
+
+interface GitHubCheckResult {
   repo: string;
-  serverUrl: string;
-  branch: string;
-  updateAvailable: boolean;
-  comparisonReason: string;
-  latestRelease: {
-    tagName: string;
-    name: string;
-    publishedAt: string | null;
-    body: string;
-    htmlUrl: string;
-    zipballUrl: string | null;
-    tarballUrl: string | null;
-    assets: GitHubReleaseAsset[];
-  } | null;
-  latestCommit: {
-    sha: string;
-    shortSha: string;
-    message: string;
-    author: string;
-    date: string | null;
-    htmlUrl: string;
-  } | null;
+  htmlUrl: string;
+  description: string;
+  defaultBranch: string;
+  hasPages: boolean;
+  pagesUrl: string | null;
+  latestRelease: GitHubReleaseInfo | null;
+  latestTag: { name: string; commitSha: string } | null;
+  recentCommits: GitHubCommitInfo[];
+  checkedAt: string;
 }
 
 interface GitHubUpdateModalProps {
   onClose: () => void;
 }
 
-const STORAGE_KEY = 'vietnam_war_github_updater_v1';
+export function parseGitHubRepoInput(rawInput: string): { owner: string; repo: string; slug: string } | null {
+  const trimmed = rawInput.trim();
+  if (!trimmed) return null;
 
-interface SavedConfig {
-  serverUrl: string;
-  repo: string;
-  branch: string;
+  let candidate = trimmed.replace(/^git@github\.com:/i, 'https://github.com/');
+  if (!/^https?:\/\//i.test(candidate) && candidate.includes('github.')) {
+    candidate = `https://${candidate}`;
+  }
+
+  if (/^https?:\/\//i.test(candidate)) {
+    try {
+      const url = new URL(candidate);
+      const host = url.hostname.toLowerCase();
+      const parts = url.pathname
+        .split('/')
+        .map((p) => p.trim())
+        .filter(Boolean);
+
+      if (host.endsWith('.github.io')) {
+        const owner = host.slice(0, -'.github.io'.length);
+        const repo = (parts[0] || `${owner}.github.io`).replace(/\.git$/i, '');
+        if (/^[A-Za-z0-9_.-]+$/.test(owner) && /^[A-Za-z0-9_.-]+$/.test(repo)) {
+          return { owner, repo, slug: `${owner}/${repo}` };
+        }
+      }
+
+      if (host === 'github.com' || host === 'www.github.com') {
+        if (parts.length >= 2) {
+          const owner = parts[0];
+          const repo = parts[1].replace(/\.git$/i, '');
+          if (/^[A-Za-z0-9_.-]+$/.test(owner) && /^[A-Za-z0-9_.-]+$/.test(repo)) {
+            return { owner, repo, slug: `${owner}/${repo}` };
+          }
+        }
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  const slashParts = trimmed.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '').split('/');
+  if (slashParts.length === 2) {
+    const [owner, repo] = slashParts;
+    if (/^[A-Za-z0-9_.-]+$/.test(owner) && /^[A-Za-z0-9_.-]+$/.test(repo)) {
+      return { owner, repo, slug: `${owner}/${repo}` };
+    }
+  }
+
+  return null;
 }
 
-function loadSavedConfig(): SavedConfig {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<SavedConfig>;
-      return {
-        serverUrl: typeof parsed.serverUrl === 'string' && parsed.serverUrl ? parsed.serverUrl : 'https://github.com',
-        repo: typeof parsed.repo === 'string' ? parsed.repo : '',
-        branch: typeof parsed.branch === 'string' && parsed.branch ? parsed.branch : 'main',
-      };
-    }
-  } catch {
-    // ignore storage failures
+function parseSemverParts(version: string): [number, number, number] | null {
+  const cleaned = version.trim().replace(/^v/i, '').split('-')[0];
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(cleaned);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function compareSemver(a: string, b: string): number {
+  const pa = parseSemverParts(a);
+  const pb = parseSemverParts(b);
+  if (!pa || !pb) {
+    return a.replace(/^v/i, '').localeCompare(b.replace(/^v/i, ''));
   }
-  return { serverUrl: 'https://github.com', repo: '', branch: 'main' };
+  for (let i = 0; i < 3; i += 1) {
+    if (pa[i] > pb[i]) return 1;
+    if (pa[i] < pb[i]) return -1;
+  }
+  return 0;
 }
 
 function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB';
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-function isSafeHttpsUrl(raw?: string | null): boolean {
-  if (!raw) return false;
-  try {
-    const parsed = new URL(raw);
-    return parsed.protocol === 'https:';
-  } catch {
-    return false;
+function formatDate(iso: string): string {
+  if (!iso) return 'Unknown date';
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return iso;
+  return dt.toLocaleString();
+}
+
+async function fetchGitHubDirectly(owner: string, repo: string): Promise<GitHubCheckResult> {
+  const base = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  const headers = { Accept: 'application/vnd.github+json' };
+
+  const repoRes = await fetch(base, { headers });
+  if (!repoRes.ok) {
+    const errBody = await repoRes.json().catch(() => ({}));
+    throw new Error(
+      (errBody as { message?: string }).message ||
+        `GitHub returned ${repoRes.status} for ${owner}/${repo}`,
+    );
   }
+  const repoJson = (await repoRes.json()) as {
+    full_name: string;
+    html_url: string;
+    description?: string | null;
+    default_branch?: string;
+    has_pages?: boolean;
+  };
+
+  const [releaseRes, tagsRes, commitsRes] = await Promise.all([
+    fetch(`${base}/releases/latest`, { headers }).catch(() => null),
+    fetch(`${base}/tags?per_page=3`, { headers }).catch(() => null),
+    fetch(`${base}/commits?per_page=3`, { headers }).catch(() => null),
+  ]);
+
+  let latestRelease: GitHubReleaseInfo | null = null;
+  if (releaseRes && releaseRes.ok) {
+    const rel = (await releaseRes.json()) as {
+      tag_name?: string;
+      name?: string;
+      published_at?: string;
+      html_url?: string;
+      body?: string;
+      prerelease?: boolean;
+      assets?: Array<{ name: string; size: number; browser_download_url: string }>;
+    };
+    latestRelease = {
+      tagName: rel.tag_name || '',
+      name: rel.name || rel.tag_name || 'Latest Release',
+      publishedAt: rel.published_at || '',
+      htmlUrl: rel.html_url || `${repoJson.html_url}/releases`,
+      body: rel.body || '',
+      prerelease: Boolean(rel.prerelease),
+      assets: (rel.assets || []).map((a) => ({
+        name: a.name,
+        size: a.size,
+        downloadUrl: a.browser_download_url,
+      })),
+    };
+  }
+
+  let latestTag: { name: string; commitSha: string } | null = null;
+  if (tagsRes && tagsRes.ok) {
+    const tags = (await tagsRes.json()) as Array<{ name: string; commit?: { sha?: string } }>;
+    if (Array.isArray(tags) && tags.length > 0) {
+      latestTag = {
+        name: tags[0].name,
+        commitSha: tags[0].commit?.sha || '',
+      };
+    }
+  }
+
+  let recentCommits: GitHubCommitInfo[] = [];
+  if (commitsRes && commitsRes.ok) {
+    const commits = (await commitsRes.json()) as Array<{
+      sha: string;
+      html_url: string;
+      commit?: {
+        message?: string;
+        author?: { name?: string; date?: string };
+      };
+    }>;
+    if (Array.isArray(commits)) {
+      recentCommits = commits.map((c) => ({
+        sha: c.sha,
+        shortSha: c.sha.slice(0, 7),
+        message: (c.commit?.message || '').split('\n')[0],
+        author: c.commit?.author?.name || 'Developer',
+        date: c.commit?.author?.date || '',
+        htmlUrl: c.html_url,
+      }));
+    }
+  }
+
+  return {
+    repo: repoJson.full_name,
+    htmlUrl: repoJson.html_url,
+    description: repoJson.description || '',
+    defaultBranch: repoJson.default_branch || 'main',
+    hasPages: Boolean(repoJson.has_pages),
+    pagesUrl: repoJson.has_pages ? `https://${owner}.github.io/${repo}/` : null,
+    latestRelease,
+    latestTag,
+    recentCommits,
+    checkedAt: new Date().toISOString(),
+  };
 }
 
 export function GitHubUpdateModal({ onClose }: GitHubUpdateModalProps) {
-  const [serverUrl, setServerUrl] = useState(() => loadSavedConfig().serverUrl);
-  const [repo, setRepo] = useState(() => loadSavedConfig().repo);
-  const [branch, setBranch] = useState(() => loadSavedConfig().branch);
+  const {
+    isElectron,
+    status: desktopStatus,
+    checkForUpdates: checkDesktopUpdates,
+    installUpdate: installDesktopUpdate,
+  } = useDesktopUpdater();
 
-  const [checking, setChecking] = useState(false);
-  const [installing, setInstalling] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const [reloadReady, setReloadReady] = useState(false);
-  const [currentVersion, setCurrentVersion] = useState<string>('1.0.0');
-  const [installedSha, setInstalledSha] = useState<string | null>(null);
-  const [result, setResult] = useState<GitHubUpdateCheckResponse | null>(null);
+  const currentVersion = isElectron ? desktopStatus.currentVersion : DEFAULT_APP_VERSION;
 
-  const persistConfig = useCallback((nextServer: string, nextRepo: string, nextBranch: string) => {
+  const [repoInput, setRepoInput] = useState<string>(() => {
     try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          serverUrl: nextServer.trim(),
-          repo: nextRepo.trim(),
-          branch: nextBranch.trim(),
-        }),
-      );
+      const saved = localStorage.getItem(STORAGE_REPO_KEY);
+      if (saved) return saved;
     } catch {
-      // ignore storage failures
+      // ignore storage errors
     }
-  }, []);
+    const envRepo = import.meta.env.VITE_GITHUB_REPO as string | undefined;
+    return envRepo || '';
+  });
+  const [previousCommitSha, setPreviousCommitSha] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(STORAGE_LAST_COMMIT_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<GitHubCheckResult | null>(null);
+  const [newCommitDetected, setNewCommitDetected] = useState(false);
 
   const runCheck = useCallback(
-    async (srv: string, rp: string, br: string) => {
-      const cleanRepo = rp.trim();
-      const cleanServer = (srv.trim() || 'https://github.com').replace(/\/+$/, '');
-      const cleanBranch = br.trim() || 'main';
-      if (!cleanRepo) {
-        setErrorMsg('Enter your GitHub repository (owner/repo) to check for updates.');
+    async (inputOverride?: string) => {
+      const raw = (inputOverride ?? repoInput).trim();
+      const parsed = parseGitHubRepoInput(raw);
+      if (!parsed) {
+        setError(
+          'Enter your GitHub repository as owner/repo or a full URL like https://github.com/owner/repo.',
+        );
         return;
       }
-      persistConfig(cleanServer, cleanRepo, cleanBranch);
-      setChecking(true);
-      setErrorMsg(null);
-      setStatusMsg(null);
+
+      setLoading(true);
+      setError(null);
+      setNewCommitDetected(false);
+
       try {
-        const params = new URLSearchParams({
-          repo: cleanRepo,
-          serverUrl: cleanServer,
-          branch: cleanBranch,
-        });
-        const resp = await fetch(`/api/github/check-update?${params.toString()}`);
-        const data = (await resp.json()) as GitHubUpdateCheckResponse & { error?: string };
-        if (!resp.ok) {
-          throw new Error(data.error || 'Failed to check GitHub server for updates.');
+        try {
+          localStorage.setItem(STORAGE_REPO_KEY, parsed.slug);
+        } catch {
+          // ignore storage errors
         }
+        setRepoInput(parsed.slug);
+
+        let data: GitHubCheckResult | null = null;
+        try {
+          const apiRes = await fetch(
+            `/api/github/check?repo=${encodeURIComponent(parsed.slug)}`,
+          );
+          if (apiRes.ok) {
+            data = (await apiRes.json()) as GitHubCheckResult;
+          } else if (apiRes.status !== 404) {
+            const errJson = (await apiRes.json().catch(() => ({}))) as { error?: string };
+            throw new Error(errJson.error || `Server error (${apiRes.status})`);
+          }
+        } catch (proxyErr) {
+          // If backend proxy is unavailable (e.g. static Electron/GitHub Pages), call GitHub API directly
+          if (
+            proxyErr instanceof Error &&
+            !/failed to fetch|network|404/i.test(proxyErr.message)
+          ) {
+            throw proxyErr;
+          }
+        }
+
+        if (!data) {
+          data = await fetchGitHubDirectly(parsed.owner, parsed.repo);
+        }
+
         setResult(data);
-        setCurrentVersion(data.currentVersion);
-        setInstalledSha(data.installedCommitSha);
-        setStatusMsg(
-          data.updateAvailable
-            ? `Update found: ${data.comparisonReason}`
-            : `Up to date (${data.comparisonReason})`,
-        );
+
+        const latestSha = data.recentCommits[0]?.sha || null;
+        if (latestSha) {
+          if (previousCommitSha && previousCommitSha !== latestSha) {
+            setNewCommitDetected(true);
+          }
+          try {
+            localStorage.setItem(STORAGE_LAST_COMMIT_KEY, latestSha);
+          } catch {
+            // ignore storage errors
+          }
+          setPreviousCommitSha(latestSha);
+        }
       } catch (err) {
-        setErrorMsg(err instanceof Error ? err.message : 'Unable to reach GitHub update server.');
+        setError(err instanceof Error ? err.message : 'Unable to check GitHub for updates.');
       } finally {
-        setChecking(false);
+        setLoading(false);
       }
     },
-    [persistConfig],
+    [repoInput, previousCommitSha],
   );
 
+  // Auto-check on open if repository is saved, or ask server for a configured default repo
   useEffect(() => {
-    let active = true;
-    fetch('/api/github/config')
-      .then((r) => (r.ok ? r.json() : null))
-      .then(
-        (
-          cfg: {
-            currentVersion?: string;
-            installedCommitSha?: string | null;
-            defaultRepo?: string;
-            defaultServerUrl?: string;
-            defaultBranch?: string;
-          } | null,
-        ) => {
-          if (!active || !cfg) return;
-          if (cfg.currentVersion) setCurrentVersion(cfg.currentVersion);
-          if (cfg.installedCommitSha) setInstalledSha(cfg.installedCommitSha);
-
-          const saved = loadSavedConfig();
-          const initialRepo = saved.repo || cfg.defaultRepo || '';
-          const initialServer =
-            saved.serverUrl !== 'https://github.com'
-              ? saved.serverUrl
-              : cfg.defaultServerUrl || 'https://github.com';
-          const initialBranch = saved.branch || cfg.defaultBranch || 'main';
-
-          if (!saved.repo && cfg.defaultRepo) setRepo(cfg.defaultRepo);
-          if (saved.serverUrl === 'https://github.com' && cfg.defaultServerUrl) {
-            setServerUrl(cfg.defaultServerUrl);
-          }
-          if (!saved.branch && cfg.defaultBranch) setBranch(cfg.defaultBranch);
-
-          if (initialRepo) {
-            void runCheck(initialServer, initialRepo, initialBranch);
-          }
-        },
-      )
-      .catch(() => {});
-
-    return () => {
-      active = false;
-    };
-  }, [runCheck]);
-
-  const handleInstallUpdate = async () => {
-    const cleanRepo = repo.trim();
-    const cleanServer = (serverUrl.trim() || 'https://github.com').replace(/\/+$/, '');
-    const cleanBranch = branch.trim() || 'main';
-    if (!cleanRepo) {
-      setErrorMsg('Enter your GitHub repository (owner/repo) first.');
+    const parsed = parseGitHubRepoInput(repoInput);
+    if (parsed) {
+      void runCheck(parsed.slug);
       return;
     }
 
-    persistConfig(cleanServer, cleanRepo, cleanBranch);
-    setInstalling(true);
-    setErrorMsg(null);
-    setStatusMsg('Downloading package from GitHub server and installing update...');
+    let cancelled = false;
+    void fetch('/api/github/default-repo')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { repo?: string | null } | null) => {
+        if (!cancelled && data?.repo) {
+          setRepoInput(data.repo);
+          void runCheck(data.repo);
+        }
+      })
+      .catch(() => {});
 
-    try {
-      const resp = await fetch('/api/github/install-update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          repo: cleanRepo,
-          serverUrl: cleanServer,
-          branch: cleanBranch,
-          tagName: result?.latestRelease?.tagName ?? null,
-        }),
-      });
-      const data = (await resp.json()) as {
-        installed?: boolean;
-        installedVersion?: string;
-        installedCommitSha?: string | null;
-        message?: string;
-        error?: string;
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const versionComparison = useMemo(() => {
+    if (!result) return null;
+    const remoteVersionRaw = result.latestRelease?.tagName || result.latestTag?.name || '';
+    if (!remoteVersionRaw) {
+      return {
+        status: 'no-release' as const,
+        remoteVersion: null,
       };
-      if (!resp.ok || !data.installed) {
-        throw new Error(data.error || 'Update installation failed.');
-      }
-
-      if (data.installedVersion) setCurrentVersion(data.installedVersion);
-      if (data.installedCommitSha) setInstalledSha(data.installedCommitSha);
-
-      // Refresh PWA service worker and browser caches so reloaded app gets updated build
-      if ('serviceWorker' in navigator) {
-        const regs = await navigator.serviceWorker.getRegistrations().catch(() => []);
-        await Promise.all(regs.map((r) => r.update().catch(() => {})));
-      }
-      if ('caches' in window) {
-        const keys = await caches.keys().catch(() => []);
-        await Promise.all(keys.map((k) => caches.delete(k).catch(() => false)));
-      }
-
-      setReloadReady(true);
-      setStatusMsg(data.message || 'Update installed successfully. Reload to launch the new version.');
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Failed to download and install update.');
-      setStatusMsg(null);
-    } finally {
-      setInstalling(false);
     }
-  };
-
-  const archiveDownloadHref =
-    repo.trim() &&
-    `/api/github/download-archive?${new URLSearchParams({
-      repo: repo.trim(),
-      serverUrl: (serverUrl.trim() || 'https://github.com').replace(/\/+$/, ''),
-      ref: result?.latestRelease?.tagName || branch.trim() || 'main',
-    }).toString()}`;
+    const cmp = compareSemver(remoteVersionRaw, currentVersion);
+    if (cmp > 0) {
+      return {
+        status: 'update-available' as const,
+        remoteVersion: remoteVersionRaw.replace(/^v/i, ''),
+      };
+    }
+    return {
+      status: 'up-to-date' as const,
+      remoteVersion: remoteVersionRaw.replace(/^v/i, ''),
+    };
+  }, [result, currentVersion]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-[#0c0f0b]/90 p-3 sm:p-4 pointer-events-auto overflow-y-auto touch-scroll">
-      <div className="w-full max-w-xl bg-[#161c14] border border-[#4a5640] rounded-lg p-4 sm:p-6 shadow-2xl my-auto">
-        <div className="flex items-start justify-between gap-3 mb-4">
-          <div>
-            <div className="text-xs font-mono-tabular uppercase tracking-widest text-[#c89b3c]">
-              GitHub Server Updater
+    <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/75 p-3 sm:p-6 overflow-y-auto touch-scroll">
+      <div className="w-full max-w-2xl bg-[#121710] border border-[#49543e] rounded-md shadow-2xl overflow-hidden my-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between gap-3 px-4 sm:px-6 py-4 bg-[#171e15] border-b border-[#2e3828]">
+          <div className="flex items-center gap-2.5">
+            <GitBranch className="w-5 h-5 text-[#9cc47d]" />
+            <div>
+              <h2 className="text-base sm:text-lg font-display font-bold tracking-wider uppercase text-[#ece9df]">
+                GitHub Site &amp; Update Checker
+              </h2>
+              <p className="text-[11px] font-mono-tabular text-[#9ea38f]">
+                Installed Build: v{currentVersion}
+              </p>
             </div>
-            <h2 className="text-xl sm:text-2xl font-display font-bold uppercase tracking-wide text-[#ece9df]">
-              App Updates &amp; Releases
-            </h2>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close GitHub updates"
-            className="min-h-[40px] min-w-[40px] flex items-center justify-center bg-[#1e261b] hover:bg-[#2a3425] border border-[#3e4836] rounded text-[#d9d5c5] cursor-pointer"
+            aria-label="Close GitHub updates dialog"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded border border-[#323b2c] bg-[#1a2017] hover:bg-[#252d21] text-[#b8b39e] hover:text-white cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Current Local App Status */}
-        <div className="mb-4 p-3 bg-[#11150f] border border-[#2f382a] rounded flex flex-wrap items-center justify-between gap-2 text-xs font-mono-tabular">
-          <span className="text-[#9ea38f]">
-            Installed Version:{' '}
-            <strong className="text-[#ece9df]">v{currentVersion.replace(/^v/i, '')}</strong>
-          </span>
-          {installedSha && (
-            <span className="text-[#9cc47d]">
-              Commit: {installedSha.slice(0, 7)}
-            </span>
-          )}
-        </div>
-
-        {/* GitHub Server & Repository Form */}
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void runCheck(serverUrl, repo, branch);
-          }}
-          className="space-y-3 mb-4 p-3.5 bg-[#11150f] border border-[#2f382a] rounded"
-        >
-          <div>
-            <label
-              htmlFor="gh-server-url"
-              className="flex items-center gap-1.5 text-[11px] font-mono-tabular uppercase text-[#9ea38f] mb-1"
-            >
-              <Server className="w-3.5 h-3.5 text-[#c89b3c]" />
-              <span>GitHub Server URL (HTTPS)</span>
-            </label>
-            <input
-              id="gh-server-url"
-              type="url"
-              value={serverUrl}
-              onChange={(e) => setServerUrl(e.target.value)}
-              placeholder="https://github.com or https://git.yourdomain.com"
-              className="w-full min-h-[40px] px-3 py-1.5 bg-[#181e15] border border-[#384331] rounded text-sm font-mono-tabular text-[#ece9df] focus:outline-none focus:border-[#c89b3c]"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-            <div className="sm:col-span-2">
-              <label
-                htmlFor="gh-repo"
-                className="flex items-center gap-1.5 text-[11px] font-mono-tabular uppercase text-[#9ea38f] mb-1"
-              >
-                <GitBranch className="w-3.5 h-3.5 text-[#c89b3c]" />
-                <span>Repository (owner/repo)</span>
-              </label>
-              <input
-                id="gh-repo"
-                type="text"
-                value={repo}
-                onChange={(e) => setRepo(e.target.value)}
-                placeholder="username/vietnam-war-1968"
-                className="w-full min-h-[40px] px-3 py-1.5 bg-[#181e15] border border-[#384331] rounded text-sm font-mono-tabular text-[#ece9df] focus:outline-none focus:border-[#c89b3c]"
-              />
-            </div>
-
-            <div>
-              <label
-                htmlFor="gh-branch"
-                className="block text-[11px] font-mono-tabular uppercase text-[#9ea38f] mb-1"
-              >
-                Branch
-              </label>
-              <input
-                id="gh-branch"
-                type="text"
-                value={branch}
-                onChange={(e) => setBranch(e.target.value)}
-                placeholder="main"
-                className="w-full min-h-[40px] px-3 py-1.5 bg-[#181e15] border border-[#384331] rounded text-sm font-mono-tabular text-[#ece9df] focus:outline-none focus:border-[#c89b3c]"
-              />
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            disabled={checking || installing}
-            className="min-h-[44px] w-full bg-[#232b20] hover:bg-[#2f392b] disabled:opacity-60 border border-[#c89b3c]/80 text-[#f0dca0] font-display font-semibold tracking-wider uppercase text-sm rounded flex items-center justify-center gap-2 cursor-pointer"
+        <div className="p-4 sm:p-6 space-y-5 max-h-[82dvh] overflow-y-auto touch-scroll">
+          {/* Repo / GitHub site input */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void runCheck();
+            }}
+            className="space-y-2"
           >
-            <RefreshCw className={`w-4 h-4 ${checking ? 'animate-spin' : ''}`} />
-            <span>{checking ? 'Checking GitHub Server...' : 'Check for Updates'}</span>
-          </button>
-        </form>
+            <label
+              htmlFor="github-repo-input"
+              className="block text-xs font-mono-tabular uppercase tracking-wider text-[#b8b39e]"
+            >
+              Your GitHub Repository or GitHub Site URL
+            </label>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                id="github-repo-input"
+                type="text"
+                value={repoInput}
+                onChange={(e) => setRepoInput(e.target.value)}
+                placeholder="owner/repo or https://github.com/owner/vietnam-war-1968"
+                className="flex-1 min-h-[44px] px-3.5 py-2 bg-[#0c100a] border border-[#3a4533] focus:border-[#c89b3c] outline-none rounded text-sm font-mono-tabular text-[#ece9df] placeholder:text-[#687060]"
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="min-h-[44px] px-5 py-2 bg-[#c89b3c] hover:bg-[#d8ab4c] disabled:opacity-60 text-[#11150f] font-display font-semibold uppercase tracking-wider text-sm rounded flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                <span>{loading ? 'Checking...' : 'Check Updates'}</span>
+              </button>
+            </div>
+            <p className="text-[11px] text-[#8e9381] font-mono-tabular">
+              Supports <span className="text-[#c9c5b4]">owner/repo</span>,{' '}
+              <span className="text-[#c9c5b4]">https://github.com/owner/repo</span>, or{' '}
+              <span className="text-[#c9c5b4]">https://owner.github.io/repo</span>. Saved automatically.
+            </p>
+          </form>
 
-        {/* Status / Errors */}
-        {errorMsg && (
-          <div className="mb-4 p-3 bg-[#2a1715] border border-[#8e3a32] rounded text-xs font-mono-tabular text-[#f2bdb6]">
-            {errorMsg}
-          </div>
-        )}
+          {/* Electron Desktop Auto-Updater Section (shown when inside Electron app) */}
+          {isElectron && (
+            <div className="p-3.5 bg-[#171d14] border border-[#414e38] rounded space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#c89b3c]">
+                  Electron Built-In Auto-Updater
+                </div>
+                {desktopStatus.stage === 'downloaded' ? (
+                  <button
+                    type="button"
+                    onClick={() => void installDesktopUpdate()}
+                    className="min-h-[38px] px-3 py-1.5 bg-[#c89b3c] hover:bg-[#d8ab4c] text-[#11150f] rounded text-xs font-mono-tabular font-semibold uppercase flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Restart &amp; Install v{desktopStatus.availableVersion}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void checkDesktopUpdates()}
+                    className="min-h-[38px] px-3 py-1.5 bg-[#20281c] hover:bg-[#2a3424] border border-[#56664b] text-[#e5efe0] rounded text-xs font-mono-tabular uppercase cursor-pointer"
+                  >
+                    Run Desktop Updater
+                  </button>
+                )}
+              </div>
+              {desktopStatus.message && (
+                <div className="text-xs font-mono-tabular text-[#b8b39e]">
+                  {desktopStatus.message}
+                </div>
+              )}
+            </div>
+          )}
 
-        {statusMsg && (
-          <div className="mb-4 p-3 bg-[#192416] border border-[#567448] rounded text-xs font-mono-tabular text-[#cfe6bf] flex items-start gap-2">
-            <CheckCircle2 className="w-4 h-4 text-[#9cc47d] shrink-0 mt-0.5" />
-            <span>{statusMsg}</span>
-          </div>
-        )}
+          {/* Error banner */}
+          {error && (
+            <div className="p-3.5 bg-[#2c1512] border border-[#8e3e34] rounded text-xs font-mono-tabular text-[#f5b7ad]">
+              {error}
+            </div>
+          )}
 
-        {/* Latest Release / Commit Details & Install Controls */}
-        {result && (
-          <div className="space-y-3.5 mb-4 p-3.5 bg-[#11150f] border border-[#34402d] rounded">
-            {result.latestRelease ? (
-              <div>
-                <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
-                  <span className="text-xs font-mono-tabular uppercase text-[#c89b3c]">
-                    Latest Release: {result.latestRelease.tagName}
-                  </span>
-                  {result.latestRelease.publishedAt && (
-                    <span className="text-[11px] font-mono-tabular text-[#8e9381]">
-                      {new Date(result.latestRelease.publishedAt).toLocaleDateString()}
+          {/* Results */}
+          {result && !error && (
+            <div className="space-y-4">
+              {/* Update status summary */}
+              {versionComparison?.status === 'update-available' ? (
+                <div className="p-4 bg-[#272010] border border-[#c89b3c] rounded space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-[#f4d78b] font-display font-semibold uppercase tracking-wider">
+                      <Tag className="w-4 h-4 text-[#c89b3c]" />
+                      <span>
+                        Update Available: v{versionComparison.remoteVersion}
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-mono-tabular text-[#d9c38c]">
+                      Current: v{currentVersion}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#e7dec1]">
+                    A newer release is published on your GitHub repository. Download the updated
+                    installer below or view the full release page.
+                  </p>
+                </div>
+              ) : versionComparison?.status === 'up-to-date' ? (
+                <div className="p-4 bg-[#142215] border border-[#517a49] rounded flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-[#a7dc8e] font-display font-semibold uppercase tracking-wider">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Up to Date (v{versionComparison.remoteVersion})</span>
+                  </div>
+                  {newCommitDetected && (
+                    <span className="text-[11px] font-mono-tabular px-2 py-0.5 bg-[#2a2312] border border-[#c89b3c] rounded text-[#f4d78b]">
+                      New commits pushed since last check
                     </span>
                   )}
                 </div>
-                <div className="text-sm font-semibold text-[#ece9df] mb-1">
-                  {result.latestRelease.name}
-                </div>
-                {result.latestRelease.body && (
-                  <pre className="whitespace-pre-wrap text-xs text-[#b8b39e] bg-[#161c14] border border-[#2a3325] rounded p-2.5 max-h-32 overflow-y-auto touch-scroll font-sans">
-                    {result.latestRelease.body}
-                  </pre>
-                )}
-
-                {result.latestRelease.assets.length > 0 && (
-                  <div className="mt-3">
-                    <div className="text-[11px] font-mono-tabular uppercase text-[#9ea38f] mb-1.5">
-                      Release Downloads
+              ) : (
+                <div className="p-4 bg-[#171d14] border border-[#3d4736] rounded space-y-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs font-display font-semibold uppercase tracking-wider text-[#ece9df]">
+                      Connected to {result.repo} (No Published Releases Yet)
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      {result.latestRelease.assets
-                        .filter((asset) => isSafeHttpsUrl(asset.downloadUrl))
-                        .map((asset) => (
-                          <a
-                            key={asset.name}
-                            href={asset.downloadUrl}
-                            download={asset.name}
-                            className="min-h-[38px] px-3 py-1.5 bg-[#1b2218] hover:bg-[#273123] border border-[#4a5840] rounded text-xs font-mono-tabular text-[#ece9df] inline-flex items-center gap-1.5"
-                          >
-                            <Download className="w-3.5 h-3.5 text-[#c89b3c]" />
-                            <span>
-                              {asset.name} ({formatBytes(asset.size)})
-                            </span>
-                          </a>
-                        ))}
-                    </div>
+                    {newCommitDetected && (
+                      <span className="text-[11px] font-mono-tabular px-2 py-0.5 bg-[#2a2312] border border-[#c89b3c] rounded text-[#f4d78b]">
+                        New commit detected!
+                      </span>
+                    )}
                   </div>
-                )}
-              </div>
-            ) : result.latestCommit ? (
-              <div>
-                <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
-                  <span className="text-xs font-mono-tabular uppercase text-[#c89b3c]">
-                    Latest Commit on {result.branch}
-                  </span>
-                  <span className="text-[11px] font-mono-tabular text-[#9cc47d]">
-                    {result.latestCommit.shortSha}
-                  </span>
+                  <p className="text-xs text-[#a5a897]">
+                    Tracking latest commits on branch{' '}
+                    <span className="font-mono-tabular text-[#ece9df]">{result.defaultBranch}</span>.
+                    Push a <span className="font-mono-tabular text-[#ece9df]">v1.x.x</span> tag or run
+                    the GitHub Actions release workflow to publish downloadable installers.
+                  </p>
                 </div>
-                <div className="text-sm text-[#ece9df] mb-1">{result.latestCommit.message}</div>
-                <div className="text-[11px] font-mono-tabular text-[#8e9381]">
-                  {result.latestCommit.author}
-                  {result.latestCommit.date
-                    ? ` · ${new Date(result.latestCommit.date).toLocaleString()}`
-                    : ''}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="flex flex-col sm:flex-row gap-2 pt-2 border-t border-[#263022]">
-              <button
-                type="button"
-                disabled={installing || checking}
-                onClick={() => void handleInstallUpdate()}
-                className="min-h-[46px] flex-1 bg-[#c89b3c] hover:bg-[#d8ab4c] disabled:opacity-60 text-[#11150f] font-display font-semibold tracking-wider uppercase text-sm rounded flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <Download className="w-4 h-4" />
-                <span>
-                  {installing ? 'Downloading & Installing...' : 'Download & Install Update'}
-                </span>
-              </button>
-
-              {archiveDownloadHref && (
-                <a
-                  href={archiveDownloadHref}
-                  download={`${repo.trim().replace('/', '-')}-${result.latestRelease?.tagName || branch.trim() || 'main'}.zip`}
-                  className="min-h-[46px] px-4 bg-[#1a2017] hover:bg-[#252e20] border border-[#4a5640] text-[#ece9df] font-mono-tabular uppercase text-xs rounded flex items-center justify-center gap-1.5 shrink-0"
-                >
-                  <Download className="w-3.5 h-3.5 text-[#9cc47d]" />
-                  <span>Download ZIP</span>
-                </a>
               )}
 
-              {isSafeHttpsUrl(result.latestRelease?.htmlUrl || result.latestCommit?.htmlUrl) && (
+              {/* Quick GitHub Links */}
+              <div className="flex flex-wrap items-center gap-2">
                 <a
-                  href={result.latestRelease?.htmlUrl || result.latestCommit?.htmlUrl}
+                  href={result.htmlUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="min-h-[46px] px-3.5 bg-[#1a2017] hover:bg-[#252e20] border border-[#3a4433] text-[#c4c0b0] font-mono-tabular uppercase text-xs rounded flex items-center justify-center gap-1.5 shrink-0"
+                  className="min-h-[40px] px-3 py-1.5 bg-[#1a2017] hover:bg-[#252e20] border border-[#3d4736] rounded text-xs font-mono-tabular text-[#ece9df] flex items-center gap-1.5"
                 >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>View</span>
+                  <GitBranch className="w-3.5 h-3.5 text-[#9cc47d]" />
+                  <span>Open GitHub Repo</span>
+                  <ExternalLink className="w-3 h-3 text-[#8e9381]" />
                 </a>
+
+                <a
+                  href={result.latestRelease?.htmlUrl || `${result.htmlUrl}/releases`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-h-[40px] px-3 py-1.5 bg-[#1a2017] hover:bg-[#252e20] border border-[#3d4736] rounded text-xs font-mono-tabular text-[#ece9df] flex items-center gap-1.5"
+                >
+                  <Tag className="w-3.5 h-3.5 text-[#c89b3c]" />
+                  <span>{result.latestRelease ? 'View Latest Release' : 'Releases Page'}</span>
+                  <ExternalLink className="w-3 h-3 text-[#8e9381]" />
+                </a>
+
+                {result.pagesUrl && (
+                  <a
+                    href={result.pagesUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-h-[40px] px-3 py-1.5 bg-[#1a2017] hover:bg-[#252e20] border border-[#3d4736] rounded text-xs font-mono-tabular text-[#ece9df] flex items-center gap-1.5"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-[#9cc47d]" />
+                    <span>Open GitHub Pages Site</span>
+                    <ExternalLink className="w-3 h-3 text-[#8e9381]" />
+                  </a>
+                )}
+              </div>
+
+              {/* Latest Release Notes & Downloadable Assets */}
+              {result.latestRelease && (
+                <div className="p-4 bg-[#161c13] border border-[#323b2c] rounded space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-display font-semibold uppercase tracking-wide text-[#ece9df]">
+                      {result.latestRelease.name}
+                    </div>
+                    <div className="text-[11px] font-mono-tabular text-[#9ea38f]">
+                      Published {formatDate(result.latestRelease.publishedAt)}
+                    </div>
+                  </div>
+
+                  {result.latestRelease.body && (
+                    <pre className="p-3 bg-[#0e120c] border border-[#283022] rounded text-xs font-mono-tabular text-[#c9c5b4] whitespace-pre-wrap max-h-40 overflow-y-auto touch-scroll">
+                      {result.latestRelease.body}
+                    </pre>
+                  )}
+
+                  {result.latestRelease.assets.length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="text-[11px] font-mono-tabular uppercase tracking-wider text-[#9ea38f]">
+                        Release Downloads
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {result.latestRelease.assets
+                          .filter((a) => !a.name.endsWith('.blockmap') && !a.name.endsWith('.yml'))
+                          .map((asset) => (
+                            <a
+                              key={asset.name}
+                              href={asset.downloadUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="min-h-[40px] px-3 py-2 bg-[#1a2117] hover:bg-[#252e21] border border-[#49563f] rounded text-xs font-mono-tabular text-[#ece9df] flex items-center justify-between gap-2"
+                            >
+                              <span className="truncate flex items-center gap-1.5">
+                                <Download className="w-3.5 h-3.5 text-[#c89b3c] shrink-0" />
+                                <span className="truncate">{asset.name}</span>
+                              </span>
+                              <span className="text-[10px] text-[#9ea38f] shrink-0">
+                                {formatBytes(asset.size)}
+                              </span>
+                            </a>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Recent Commits on GitHub */}
+              {result.recentCommits.length > 0 && (
+                <div className="p-4 bg-[#161c13] border border-[#323b2c] rounded space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#b8b39e] flex items-center gap-1.5">
+                      <GitCommitHorizontal className="w-4 h-4 text-[#9cc47d]" />
+                      <span>Latest GitHub Commits ({result.defaultBranch})</span>
+                    </div>
+                    <span className="text-[10px] font-mono-tabular text-[#7d8473]">
+                      Checked {formatDate(result.checkedAt)}
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {result.recentCommits.map((commit) => (
+                      <a
+                        key={commit.sha}
+                        href={commit.htmlUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block p-2.5 bg-[#0e120c] hover:bg-[#141a11] border border-[#283022] rounded transition-colors"
+                      >
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span className="text-[#ece9df] font-medium truncate">
+                            {commit.message}
+                          </span>
+                          <span className="font-mono-tabular text-[11px] text-[#c89b3c] shrink-0">
+                            {commit.shortSha}
+                          </span>
+                        </div>
+                        <div className="text-[10px] font-mono-tabular text-[#8e9381] mt-0.5">
+                          {commit.author} · {formatDate(commit.date)}
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
-
-            {reloadReady && (
-              <button
-                type="button"
-                onClick={() => window.location.reload()}
-                className="min-h-[44px] w-full bg-[#364d2b] hover:bg-[#435f36] border border-[#7ea367] text-[#eff7ea] font-display font-semibold tracking-wider uppercase text-sm rounded cursor-pointer"
-              >
-                Reload App to Apply Update
-              </button>
-            )}
-          </div>
-        )}
-
-        <p className="text-[11px] font-mono-tabular text-[#8e9381]">
-          Checks releases and branch commits on GitHub.com or your private HTTPS GitHub Enterprise
-          server. Private repos can set GITHUB_TOKEN in server environment settings.
-        </p>
+          )}
+        </div>
       </div>
     </div>
   );

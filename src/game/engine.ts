@@ -1739,6 +1739,40 @@ export class VietnamGameEngine {
     this.applyGraphicsQuality();
   }
 
+  public captureScreenshotDataUrl(): string | null {
+    if (this.disposed || this.contextLost || !this.renderer) return null;
+    this.renderer.clear();
+    this.renderer.render(this.scene, this.camera);
+    if (this.phase === 'playing' || this.phase === 'paused') {
+      this.renderer.clearDepth();
+      this.renderer.render(this.weaponScene, this.weaponCamera);
+    }
+    this.audio.playCameraShutter();
+    try {
+      return this.renderer.domElement.toDataURL('image/png');
+    } catch {
+      return null;
+    }
+  }
+
+  public getCaptureStream(fps?: number): MediaStream | null {
+    if (this.disposed || !this.renderer) return null;
+    const canvas = this.renderer.domElement as HTMLCanvasElement & {
+      captureStream?: (frameRate?: number) => MediaStream;
+    };
+    if (typeof canvas.captureStream !== 'function') return null;
+
+    const targetFps = fps ?? (this.isMobileDevice ? 30 : 60);
+    const videoStream = canvas.captureStream(targetFps);
+    const audioStream = this.audio.getCaptureStream();
+
+    const tracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
+    if (audioStream) {
+      tracks.push(...audioStream.getAudioTracks());
+    }
+    return new MediaStream(tracks);
+  }
+
   private getTargetPixelRatio(): number {
     if (this.isSoftwareGl || this.graphicsQuality === 'battery') return 1;
     const dpr = window.devicePixelRatio || 1;
