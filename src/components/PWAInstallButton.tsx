@@ -1,5 +1,6 @@
-import { Download, MonitorDown, Smartphone, Terminal } from 'lucide-react';
+import { Download, MonitorDown, RefreshCw, RotateCcw, Smartphone, Terminal } from 'lucide-react';
 import { useState } from 'react';
+import { useDesktopUpdater } from '../hooks/useDesktopUpdater';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 
 interface PWAInstallButtonProps {
@@ -8,7 +9,70 @@ interface PWAInstallButtonProps {
 
 export function PWAInstallButton({ compact = false }: PWAInstallButtonProps) {
   const { isInstallable, isInstalled, isIOS, isAndroid, isLinux, install } = usePWAInstall();
+  const { isElectron, status: updateStatus, checkForUpdates, installUpdate } = useDesktopUpdater();
   const [tipOpen, setTipOpen] = useState(false);
+
+  if (isElectron) {
+    const isBusy =
+      updateStatus.stage === 'checking' ||
+      updateStatus.stage === 'available' ||
+      updateStatus.stage === 'downloading';
+
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="px-2.5 py-2 bg-[#141811] border border-[#323b2c] rounded text-[11px] font-mono-tabular uppercase tracking-wide text-[#b8b39e]">
+            Desktop v{updateStatus.currentVersion}
+          </span>
+
+          {updateStatus.stage === 'downloaded' ? (
+            <button
+              type="button"
+              onClick={() => void installUpdate()}
+              className="min-h-[44px] px-3.5 py-2 bg-[#c89b3c] hover:bg-[#d8ab4c] rounded text-xs font-mono-tabular font-semibold uppercase tracking-wide text-[#11150f] flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>
+                Restart &amp; Install v{updateStatus.availableVersion || 'Update'}
+              </span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={() => void checkForUpdates()}
+              className="min-h-[44px] px-3.5 py-2 bg-[#1a2017] hover:bg-[#252e20] disabled:opacity-60 border border-[#6e8259] rounded text-xs font-mono-tabular uppercase tracking-wide text-[#e5efe0] flex items-center gap-2 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap shrink-0"
+            >
+              <RefreshCw className={`w-4 h-4 text-[#9cc47d] ${isBusy ? 'animate-spin' : ''}`} />
+              <span>
+                {updateStatus.stage === 'checking'
+                  ? 'Checking GitHub...'
+                  : updateStatus.stage === 'downloading'
+                    ? `Updating ${updateStatus.progress ?? 0}%`
+                    : 'Check for Updates'}
+              </span>
+            </button>
+          )}
+        </div>
+
+        {updateStatus.stage === 'downloading' && (
+          <div className="w-full max-w-sm h-1.5 bg-[#1a2017] rounded overflow-hidden border border-[#2c3527]">
+            <div
+              className="h-full bg-[#c89b3c] transition-all duration-200"
+              style={{ width: `${Math.min(100, Math.max(4, updateStatus.progress ?? 0))}%` }}
+            />
+          </div>
+        )}
+
+        {(!compact || updateStatus.message) && (
+          <div className="text-[11px] font-mono-tabular text-[#8e9381]">
+            {updateStatus.message ||
+              'Connected to GitHub Releases for automatic background desktop updates.'}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-1.5">

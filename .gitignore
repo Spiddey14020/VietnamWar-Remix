@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+electron/node_modules/
+electron/app/
+electron/icons/
+electron/dist-installer/
+release/
+

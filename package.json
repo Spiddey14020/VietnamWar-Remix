@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -9,6 +9,7 @@
     "build": "vite build",
     "build:exe": "node scripts/build-windows-exe.mjs",
     "build:linux": "node scripts/build-linux-installer.mjs",
+    "prepare:electron": "node scripts/prepare-electron.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist release server.js",
     "lint": "tsc --noEmit"
