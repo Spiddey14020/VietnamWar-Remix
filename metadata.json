@@ -1,0 +1,6 @@
+{
+  "name": "Vietnam War",
+  "description": "Open-world single-player military simulation and first-person shooter set in the 1968 Mekong valley, engineered for Android touch controls and PC.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
